@@ -147,8 +147,11 @@ for index, row in monitored_pairs_df.iterrows():
    min_spread_w_day_band = min_spread_w_day_band.drop(columns=['date_only', 'date_y'])
    min_spread_w_day_band.rename(columns={'date_x': 'date'}, inplace=True)
 
+  
    # 3. trade based on the spread. long x and short y.
    latest_min = min_spread_w_day_band.iloc[-1]
+   print(f"current spread: {round(latest_min['spread'], 2)}. upper band: {round(latest_min['upper_band'], 2)}. lower band: {round(latest_min['lower_band'], 2)}.")
+
    if latest_min['spread'] > latest_min['upper_band']:
       strat = 'short Y long X'
    elif latest_min['spread'] < latest_min['lower_band']:

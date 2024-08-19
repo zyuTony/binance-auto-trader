@@ -34,4 +34,5 @@ api_key = os.getenv('BINANCE_API')
 api_secret = os.getenv('BINANCE_SECRET')  
 client = Client(api_key, api_secret)
 
- 
+conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
+conn.close()

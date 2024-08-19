@@ -13,14 +13,14 @@ MIN_R_SQUARED = 0.7
 MIN_POTENTIAL_WIN_PCT = 0.01
 
 # trade params
-TOTAL_USDT_PER_TRADE = 20
+TOTAL_USDT_PER_TRADE = 50
 BB_BAND_WINDOW = 20 
 BB_SIGNAL_STD_MULT = 1.8
 BB_STOPLOSS_STD_MULT = 2.8
 
 # file location
-strat_csv_file = './strat_df.csv'
-order_csv_file = './order_df.csv'
+strat_csv_file = '/home/ec2-user/binance_pair_trader/strat_df.csv'
+order_csv_file = '/home/ec2-user/binance_pair_trader/order_df.csv'
 
 def connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD):
     try:

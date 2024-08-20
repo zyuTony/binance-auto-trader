@@ -1,12 +1,11 @@
-import pandas as pd
-from datetime import datetime
-from binance.client import Client
+import pandas as pd 
 from datetime import datetime, timezone
+from binance.client import Client
 from binance.client import Client 
 from binance.enums import *
 import psycopg2
 from psycopg2 import OperationalError
-
+    
 # pairs selection from sql criteria
 MIN_RECENT_COINT = 0.75
 MIN_R_SQUARED = 0.65
@@ -18,9 +17,9 @@ BB_BAND_WINDOW = 20
 BB_SIGNAL_STD_MULT = 1.8
 BB_STOPLOSS_STD_MULT = 2.8
 
-# file location
-strat_csv_file = '/home/ec2-user/binance_pair_trader/strat_df.csv'
-order_csv_file = '/home/ec2-user/binance_pair_trader/order_df.csv'
+current_date = datetime.now().strftime("%Y-%m-%d")
+strat_csv_file = f'/home/ec2-user/binance_pair_trader/data/strat_df_{current_date}.csv'
+order_csv_file = '/home/ec2-user/binance_pair_trader/data/order_df.csv'
 
 def connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD):
     try:

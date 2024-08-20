@@ -37,9 +37,6 @@ for index, row in orders_df.iterrows():
       ols_coeff = row['ols_coeff'] 
       ols_constant = row['ols_constant'] 
       # check closing condition for all pairs
-      print(symbol_Y, symbol_X, long_symbol, short_symbol)
-
-      # whether back to mean
       long_minute_data, long_daily_data = get_bn_data(client, long_symbol)
       short_minute_data, short_daily_data = get_bn_data(client, short_symbol)
       curr_price_long = round_step_size(long_minute_data['close'].iloc[-1], 0.00001)

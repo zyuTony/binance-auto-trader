@@ -106,7 +106,7 @@ for index, row in monitored_pairs_df.iterrows():
    symbol_X = row['symbol_b']+'USDT'
    ols_coeff = row['ols_coeff']
    ols_constant = row['ols_constant']
-   print(f"\n--- Monitoring {symbol_Y} X {symbol_X} with coeff:{ols_coeff} and constant:{ols_constant}...")
+   print(f"\n--- Checking {symbol_Y} X {symbol_X} - coeff:{round(ols_coeff,2)} constant:{round(ols_constant,2)}")
 
    '''Check whether pair already traded or stop loss closed'''
    already_traded = False
@@ -153,7 +153,7 @@ for index, row in monitored_pairs_df.iterrows():
   
    # 3. trade based on the spread. long x and short y.
    latest_min = min_spread_w_day_band.iloc[-1]
-   print(f"current spread: {round(latest_min['spread'], 2)}. upper band: {round(latest_min['upper_band'], 2)}. lower band: {round(latest_min['lower_band'], 2)}.")
+   print(f"current spread:{round(latest_min['spread'], 2)} upper band:{round(latest_min['upper_band'], 2)} lower band:{round(latest_min['lower_band'], 2)}")
 
    if latest_min['spread'] > latest_min['upper_band']:
       strat = 'short Y long X'
@@ -198,7 +198,7 @@ for index, row in monitored_pairs_df.iterrows():
             
             # borrow X
             short_loan = client.create_margin_loan(asset=symbol_X.replace('USDT', ''), amount=str(amt_X))
-            print(short_loan)
+
             # short X
             short_order = client.create_margin_order(symbol=symbol_X, side=SIDE_SELL,type=ORDER_TYPE_MARKET, quantity=amt_X)
             print(f'shorted {symbol_X}. short sold {amt_X} of them of ${amt_X*curr_price_X}')
@@ -221,6 +221,6 @@ for index, row in monitored_pairs_df.iterrows():
       orders_df.to_csv(order_csv_file, index=False)
       print(f'Updated the new order to {order_csv_file}!')
    else:
-      print(f"NO TRADE in current minute candle.")
+      print(f"NO TRADE")
 
 conn.close()

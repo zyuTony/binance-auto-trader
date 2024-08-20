@@ -29,7 +29,7 @@ def connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD):
             database=DB_NAME,
             user=DB_USERNAME,
             password=DB_PASSWORD)
-        print(f"Connected to {DB_HOST} {DB_NAME}!")
+        print(f"Connected to {DB_NAME}!")
         return conn
     except OperationalError as e:
         print(f"{e}")

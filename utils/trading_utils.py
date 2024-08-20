@@ -8,8 +8,8 @@ import psycopg2
 from psycopg2 import OperationalError
 
 # pairs selection from sql criteria
-MIN_RECENT_COINT = 0.8
-MIN_R_SQUARED = 0.7
+MIN_RECENT_COINT = 0.75
+MIN_R_SQUARED = 0.65
 MIN_POTENTIAL_WIN_PCT = 0.01
 
 # trade params
@@ -34,6 +34,52 @@ def connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD):
     except OperationalError as e:
         print(f"{e}")
         return None
+
+def create_latest_trades_table(conn):
+    cursor = conn.cursor()
+    try:
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS latest_trades (
+            date TIMESTAMPTZ NOT NULL,
+            symbol VARCHAR(10) NOT NULL,
+            action VARCHAR(10) NOT NULL,
+            dollar_amt NUMERIC NOT NULL,
+            price NUMERIC NOT NULL,
+            amt NUMERIC NOT NULL,
+            UNIQUE (date, symbol)
+        );
+        """
+        cursor.execute(create_table_query)
+        conn.commit()
+        print(f"latest_trades created successfully.")
+    except Exception as e:
+        print(f"Failed to create table: {str(e)}")
+        conn.rollback()
+    finally:
+        cursor.close()
+
+
+def send_executed_orders_to_sql(conn, order):
+      cursor = conn.cursor() 
+      date = datetime.fromtimestamp(order['transactTime'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+      symbol = order['symbol']
+      action = order['side']
+      amt = float(order['executedQty'])
+      dollar_amt = float(order['cummulativeQuoteQty'])
+      price = dollar_amt/amt
+      
+      cursor.execute(
+         """
+         INSERT INTO latest_trades (date, symbol, action, dollar_amt, price, amt) 
+         VALUES %s
+         ON CONFLICT (date, symbol)
+            DO NOTHING
+         """,
+         (date, symbol, action, dollar_amt, price, amt)
+      )
+      conn.commit()
+      print("Order details written to SQL table latest_trades.")
+    
     
 def candle_transformation(candle):
       output = []

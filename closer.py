@@ -10,7 +10,11 @@ import sys
 load_dotenv()
 api_key = os.getenv('BINANCE_API')  
 api_secret = os.getenv('BINANCE_SECRET')  
-client = Client(api_key, api_secret)
+DB_USERNAME = os.getenv('RDS_USERNAME') 
+DB_PASSWORD = os.getenv('RDS_PASSWORD') 
+DB_HOST = os.getenv('RDS_ENDPOINT') 
+DB_NAME = 'financial_data'
+
 
 # must have existing orders to track
 if os.path.exists(order_csv_file):
@@ -23,6 +27,7 @@ else:
    sys.exit()
     
 new_orders_df = pd.DataFrame() 
+client = Client(api_key, api_secret)
 for index, row in orders_df.iterrows():
    if row['pair_trade_status'] == 'OPEN':
       symbol_Y = row['symbol_Y']
@@ -92,6 +97,10 @@ for index, row in orders_df.iterrows():
             print(f'Closed short order for {short_symbol}. Repaid {coin_amt_to_repay} of them.')
       
             new_orders_df = pd.concat([new_orders_df, pairs_order_to_pd_df("CLOSING_TRADE", ols_coeff, ols_constant, close_long_order, short_repurchase, close_short_loan, symbol_Y, symbol_X)])
+            
+            conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
+            send_executed_orders_to_sql(conn, close_long_order)
+            send_executed_orders_to_sql(conn, short_repurchase)
          except Exception as e:
             print(f"An error occurred executing orders: {str(e)}")
             continue

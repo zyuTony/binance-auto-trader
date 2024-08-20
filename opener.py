@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timezone
 from binance.client import Client 
 from utils.trading_utils import *
+from binance.enums import *
 from binance.helpers import round_step_size
 import warnings
 
@@ -21,6 +22,8 @@ client = Client(api_key, api_secret)
 
 # get from sql
 conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
+# create_latest_trades_table(conn) # already created
+
 query = f"""
 with key_pairs as (
     select *, row_number() over (partition by symbol order by date desc) as rn
@@ -82,7 +85,7 @@ order by most_recent_coint_pct desc, recent_coint_pct desc,
 hist_coint_pct desc, potential_win_pct desc;
 """
 monitored_pairs_df = pd.read_sql(query, conn)
-conn.close()
+
 
 # reading saving files
 if os.path.exists(strat_csv_file):
@@ -191,6 +194,7 @@ for index, row in monitored_pairs_df.iterrows():
             # long Y
             long_order = client.order_market_buy(symbol=symbol_Y, quantity=amt_Y)
             print(f'longed {symbol_Y}. bought {amt_Y} of them of ${amt_Y*curr_price_Y}')
+            send_executed_orders_to_sql(conn, long_order)
             
             # borrow X
             short_loan = client.create_margin_loan(asset=symbol_X.replace('USDT', ''), amount=str(amt_X))
@@ -198,24 +202,25 @@ for index, row in monitored_pairs_df.iterrows():
             # short X
             short_order = client.create_margin_order(symbol=symbol_X, side=SIDE_SELL,type=ORDER_TYPE_MARKET, quantity=amt_X)
             print(f'shorted {symbol_X}. short sold {amt_X} of them of ${amt_X*curr_price_X}')
-            
+            send_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df, pairs_order_to_pd_df("OPEN", ols_coeff, ols_constant, long_order, short_order, short_loan, symbol_Y, symbol_X)])
             
       elif latest_strat['strategy'].iloc[-1] == 'short Y long X':
             # long X
             long_order = client.order_market_buy(symbol=symbol_X, quantity=amt_X)
             print(f'longed {symbol_X}. bought {amt_X} of them of ${amt_X*curr_price_X}')
-            
+            send_executed_orders_to_sql(conn, long_order)
             # borrow Y
             short_loan = client.create_margin_loan(asset=symbol_Y.replace('USDT', ''), amount=str(amt_Y))
             # short Y
             short_order = client.create_margin_order(symbol=symbol_Y, side=SIDE_SELL,type=ORDER_TYPE_MARKET, quantity=amt_Y)
             print(f'shorted {symbol_Y}. short sold {amt_Y} of them of ${amt_Y*curr_price_Y}')
-
+            send_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df, pairs_order_to_pd_df("OPEN", ols_coeff, ols_constant, long_order, short_order, short_loan, symbol_Y, symbol_X)])
                
       orders_df.to_csv(order_csv_file, index=False)
       print(f'Updated the new order to {order_csv_file}!')
    else:
       print(f"NO TRADE in current minute candle.")
-   
+
+conn.close()

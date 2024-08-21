@@ -29,7 +29,7 @@ conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
 query = f"""
 with key_pairs as (
     select *, row_number() over (partition by symbol order by date desc) as rn
-    from coin_historical_price
+    from stock_historical_price
 ),
 key_pairs_120d as (
     select *
@@ -43,7 +43,7 @@ ols_spread as (
     from key_pairs_120d a
     join key_pairs_120d b
     on a.date = b.date
-    join coin_signal c
+    join stock_signal c
     on c.symbol1 = a.symbol and c.symbol2 = b.symbol
 ),
 bb_band as (

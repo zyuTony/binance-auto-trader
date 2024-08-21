@@ -1,12 +1,12 @@
 import os
+import math
 from dotenv import load_dotenv
 import pandas as pd
 from datetime import datetime, timezone
-from binance.client import Client
-from utils.trading_utils import *
-from binance.enums import *
-from binance.helpers import round_step_size
+ 
+from utils.ib_utils import *
 import warnings
+from ib_insync import *
 
 warnings.filterwarnings(
     "ignore",
@@ -18,9 +18,9 @@ DB_PASSWORD = os.getenv('RDS_PASSWORD')
 DB_HOST = os.getenv('RDS_ENDPOINT')
 DB_NAME = 'financial_data'
 
-api_key = os.getenv('BINANCE_API')
-api_secret = os.getenv('BINANCE_SECRET')
-client = Client(api_key, api_secret)
+
+ib = IB()
+ib.connect('127.0.0.1', 7496, clientId=1)
 
 # get from sql
 conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
@@ -80,24 +80,24 @@ r_squared, ols_constant, ols_coeff,
 round(potential_win/nullif(investment, 0), 4) as potential_win_pct,
 key_score, investment, potential_win
 from ranked_results
-where rn = 1 and potential_win/nullif(investment, 0) >= {MIN_POTENTIAL_WIN_PCT}
-and most_recent_coint_pct >= {MIN_RECENT_COINT}
-and r_squared >= {MIN_R_SQUARED}
+where rn = 1 and potential_win/nullif(investment, 0) >= {IB_MIN_POTENTIAL_WIN_PCT}
+and most_recent_coint_pct >= {IB_MIN_RECENT_COINT}
+and r_squared >= {IB_MIN_R_SQUARED}
 order by most_recent_coint_pct desc, recent_coint_pct desc,
 hist_coint_pct desc, potential_win_pct desc;
 """
 monitored_pairs_df = pd.read_sql(query, conn)
 
-if os.path.exists(order_csv_file):
-    orders_df = pd.read_csv(order_csv_file)
+if os.path.exists(ib_order_csv_file):
+    orders_df = pd.read_csv(ib_order_csv_file)
     if orders_df.empty:
         orders_df = pd.DataFrame()
 else:
     orders_df = pd.DataFrame()
 
 for index, row in monitored_pairs_df.iterrows():
-    symbol_Y = row['symbol_a'] + 'USDT'
-    symbol_X = row['symbol_b'] + 'USDT'
+    symbol_Y = row['symbol_a']
+    symbol_X = row['symbol_b']
     ols_coeff = row['ols_coeff']
     ols_constant = row['ols_constant']
     print(
@@ -119,12 +119,14 @@ for index, row in monitored_pairs_df.iterrows():
     '''Monitoring for opens'''
     # 1. connect get latest real time data.
     try:
-        Y_minute_data, Y_daily_data = get_bn_data(client, symbol_Y)
+        contract_Y = Stock(symbol_Y, 'SMART', 'USD')
+        Y_minute_data, Y_daily_data = get_ib_data(ib, contract_Y)
     except Exception as e:
         print(f"No Data for {symbol_Y} on Binance: {str(e)}")
         continue
     try:
-        X_minute_data, X_daily_data = get_bn_data(client, symbol_X)
+        contract_X = Stock(symbol_Y, 'SMART', 'USD')
+        X_minute_data, X_daily_data = get_ib_data(ib, contract_X)
     except Exception as e:
         print(f"No Data for {symbol_X} on Binance: {str(e)}")
         continue
@@ -152,9 +154,9 @@ for index, row in monitored_pairs_df.iterrows():
             X_daily_data,
             ols_coeff,
             ols_constant),
-        BB_BAND_WINDOW,
-        BB_SIGNAL_STD_MULT,
-        BB_STOPLOSS_STD_MULT).drop(
+        IB_BB_BAND_WINDOW,
+        IB_BB_SIGNAL_STD_MULT,
+        IB_BB_STOPLOSS_STD_MULT).drop(
             columns=['spread'])
 
     minute_spread['date_only'] = minute_spread['date'].dt.date
@@ -184,11 +186,11 @@ for index, row in monitored_pairs_df.iterrows():
                                   'symbol_Y': symbol_Y,
                                   'symbol_X': symbol_X,
                                   'strategy': strat}])
-    if not os.path.exists(strat_csv_file):
-        latest_strat.to_csv(strat_csv_file, mode='w', header=True, index=False)
+    if not os.path.exists(ib_strat_csv_file):
+        latest_strat.to_csv(ib_strat_csv_file, mode='w', header=True, index=False)
     else:
         latest_strat.to_csv(
-            strat_csv_file,
+            ib_strat_csv_file,
             mode='a',
             header=False,
             index=False)
@@ -200,80 +202,78 @@ for index, row in monitored_pairs_df.iterrows():
         symbol_X = latest_strat['symbol_X'].iloc[-1]
 
         # determine order size with formula
-        curr_price_Y = round_step_size(
-            Y_minute_data['close'].iloc[-1], 0.00001)
-        curr_price_X = round_step_size(
-            X_minute_data['close'].iloc[-1], 0.00001)
+        curr_price_Y = Y_minute_data['close'].iloc[-1]
+        curr_price_X = X_minute_data['close'].iloc[-1]
 
-        # set tick size based on crypto price
-        y_tick_size, x_tick_size = get_tick_size(curr_price_Y, curr_price_X)
-
-        amt_Y = round_step_size(
-            TOTAL_USDT_PER_TRADE / (curr_price_X * ols_coeff + curr_price_Y), y_tick_size)
-        amt_X = round_step_size(ols_coeff * amt_Y, x_tick_size)
-
-        usdt_on_Y = round_step_size(amt_Y * curr_price_Y, y_tick_size)
-        usdt_on_X = round_step_size(amt_X * curr_price_X, x_tick_size)
+        # if single share price higher than per trade $, dont execute
+        if curr_price_Y > IB_TOTAL_USDT_PER_TRADE/2:
+            print(f'{symbol_Y} at ${curr_price_Y} too expensive. skip this trade')
+            continue
+        if curr_price_X > IB_TOTAL_USDT_PER_TRADE/2:
+            print(f'{symbol_X} at ${curr_price_X} too expensive. skip this trade')
+            continue
+        
+        amt_Y = IB_TOTAL_USDT_PER_TRADE / (curr_price_X * ols_coeff + curr_price_Y)
+        amt_X = ols_coeff * amt_Y
+        amt_Y = math.ceil(amt_Y)
+        amt_X = math.ceil(amt_X)
+        
+        usdt_on_Y = amt_Y * curr_price_Y
+        usdt_on_X = amt_X * curr_price_X
+        
         print("curr_price_Y, amt_Y, curr_price_X, amt_X, usdt_on_Y, usdt_on_X")
         print(curr_price_Y, amt_Y, curr_price_X, amt_X, usdt_on_Y, usdt_on_X)
 
         if latest_strat['strategy'].iloc[-1] == 'long Y short X':
             # long Y
-            long_order = client.order_market_buy(
-                symbol=symbol_Y, quantity=amt_Y)
+            long_order_info =  MarketOrder('BUY', amt_Y)
+            long_order = ib.placeOrder(contract_Y, long_order_info)
             print(
-                f'longed {symbol_Y}. bought {amt_Y} of them of ${amt_Y*curr_price_Y}')
-            send_executed_orders_to_sql(conn, long_order)
-
-            # borrow X
-            short_loan = client.create_margin_loan(
-                asset=symbol_X.replace('USDT', ''), amount=str(amt_X))
+                f'longed {symbol_Y}. bought {amt_Y} shares of ${amt_Y*curr_price_Y}')
+            send_ib_executed_orders_to_sql(conn, long_order)
 
             # short X
-            short_order = client.create_margin_order(
-                symbol=symbol_X, side=SIDE_SELL, type=ORDER_TYPE_MARKET, quantity=amt_X)
+            short_order_info = MarketOrder('SELL', amt_X)
+            short_order = ib.placeOrder(contract_X, short_order_info)
             print(
-                f'shorted {symbol_X}. short sold {amt_X} of them of ${amt_X*curr_price_X}')
-            send_executed_orders_to_sql(conn, short_order)
+                f'shorted {symbol_X}. short sold {amt_X} shares of ${amt_X*curr_price_X}')
+            send_ib_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df,
-                                   pairs_order_to_pd_df("OPEN",
+                                   ib_pairs_order_to_pd_df("OPEN",
                                                         ols_coeff,
                                                         ols_constant,
                                                         long_order,
                                                         short_order,
-                                                        short_loan,
                                                         symbol_Y,
                                                         symbol_X)])
 
         elif latest_strat['strategy'].iloc[-1] == 'short Y long X':
             # long X
-            long_order = client.order_market_buy(
-                symbol=symbol_X, quantity=amt_X)
+            long_order_info =  MarketOrder('BUY', amt_X)
+            long_order = ib.placeOrder(contract_X, long_order_info)
             print(
                 f'longed {symbol_X}. bought {amt_X} of them of ${amt_X*curr_price_X}')
-            send_executed_orders_to_sql(conn, long_order)
-            # borrow Y
-            short_loan = client.create_margin_loan(
-                asset=symbol_Y.replace('USDT', ''), amount=str(amt_Y))
+            send_ib_executed_orders_to_sql(conn, long_order)
+           
             # short Y
-            short_order = client.create_margin_order(
-                symbol=symbol_Y, side=SIDE_SELL, type=ORDER_TYPE_MARKET, quantity=amt_Y)
+            short_order_info = MarketOrder('SELL', amt_Y)
+            short_order = ib.placeOrder(contract_Y, short_order_info)
             print(
                 f'shorted {symbol_Y}. short sold {amt_Y} of them of ${amt_Y*curr_price_Y}')
-            send_executed_orders_to_sql(conn, short_order)
+            send_ib_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df,
-                                   pairs_order_to_pd_df("OPEN",
+                                   ib_pairs_order_to_pd_df("OPEN",
                                                         ols_coeff,
                                                         ols_constant,
                                                         long_order,
                                                         short_order,
-                                                        short_loan,
                                                         symbol_Y,
                                                         symbol_X)])
 
-        orders_df.to_csv(order_csv_file, index=False)
-        print(f'Updated the new order to {order_csv_file}!')
+        orders_df.to_csv(ib_order_csv_file, index=False)
+        print(f'Updated the new order to {ib_order_csv_file}!')
     else:
         print(f"NO TRADE")
 
 conn.close()
+ib.disconnect()

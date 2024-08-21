@@ -2,8 +2,6 @@ import os
 import math
 from dotenv import load_dotenv
 import pandas as pd
-from datetime import datetime, timezone
- 
 from utils.ib_utils import *
 import warnings
 from ib_insync import *

@@ -127,13 +127,13 @@ def get_ib_data(ib_client, contract):
       daily_data = ib_candle_transformation(daily_candle)
       return minute_data, daily_data
 
-def ib_pairs_order_to_pd_df(pair_trade_status, ols_coeff, ols_constant, long_order, short_order, symbol_Y, symbol_X):
+def ib_pairs_order_to_pd_df(pair_trade_status, latest_min, ols_coeff, ols_constant, long_order, short_order, symbol_Y, symbol_X):
 
    short_order_tranx_time_str = short_order.fills[0].execution.time.strftime('%Y-%m-%d %H:%M:%S')   
    long_order_tranx_time_str = long_order.fills[0].execution.time.strftime('%Y-%m-%d %H:%M:%S')   
    
-   short_order_shares = short_order_tranx_time_str.order.totalQuantity
-   long_order_shares = long_order_tranx_time_str.order.totalQuantity
+   short_order_shares = short_order.order.totalQuantity
+   long_order_shares = long_order.order.totalQuantity
    
    short_order_price = short_order.orderStatus.avgFillPrice
    long_order_price = long_order.orderStatus.avgFillPrice
@@ -163,7 +163,10 @@ def ib_pairs_order_to_pd_df(pair_trade_status, ols_coeff, ols_constant, long_ord
       'short_orderId': short_order.order.orderId,
       'short_clientOrderId': short_order.order.clientId,
       'ols_coeff': ols_coeff,
-      'ols_constant': ols_constant
+      'ols_constant': ols_constant,
+      'lower_band': round(latest_min['lower_band'], 3),
+      'spread': round(latest_min['spread'], 3),
+      'upper_band': round(latest_min['upper_band'], 3)
    }])
 
 def calculate_bollinger_bands(df, window, std_dev, stop_loss_std_dev, col_name='spread'):

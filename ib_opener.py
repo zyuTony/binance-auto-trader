@@ -237,7 +237,8 @@ for index, row in monitored_pairs_df.iterrows():
                 f'shorted {symbol_X}. short sold {amt_X} shares of ${amt_X*curr_price_X}')
             send_ib_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df,
-                                   ib_pairs_order_to_pd_df("OPEN",
+                                   ib_pairs_order_to_pd_df("OPEN",   
+                                                        latest_min,
                                                         ols_coeff,
                                                         ols_constant,
                                                         long_order,
@@ -261,6 +262,7 @@ for index, row in monitored_pairs_df.iterrows():
             send_ib_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df,
                                    ib_pairs_order_to_pd_df("OPEN",
+                                                        latest_min,
                                                         ols_coeff,
                                                         ols_constant,
                                                         long_order,

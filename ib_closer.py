@@ -35,9 +35,12 @@ for index, row in orders_df.iterrows():
         short_symbol = row['short_symbol']
         ols_coeff = row['ols_coeff']
         ols_constant = row['ols_constant']
+        
         # check closing condition for all pairs
-        long_minute_data, long_daily_data = get_ib_data(ib, long_symbol)
-        short_minute_data, short_daily_data = get_ib_data(ib, short_symbol)
+        contract_long = Stock(long_symbol, 'SMART', 'USD')
+        long_minute_data, long_daily_data = get_ib_data(ib, contract_long)
+        contract_short = Stock(short_symbol, 'SMART', 'USD')
+        short_minute_data, short_daily_data = get_ib_data(ib, contract_short)
         curr_price_long = long_minute_data['close'].iloc[-1]
         curr_price_short = short_minute_data['close'].iloc[-1]
 
@@ -66,6 +69,7 @@ for index, row in orders_df.iterrows():
             how='left')
 
         # whether revered back to mean
+        latest_min = min_spread_w_day_band.iloc[-1]
         latest_spread = min_spread_w_day_band['spread'].iloc[-1]
         latest_mean = min_spread_w_day_band['rolling_mean'].iloc[-1]
         prev_spread = min_spread_w_day_band['spread'].iloc[-2]
@@ -75,7 +79,6 @@ for index, row in orders_df.iterrows():
         prev_diff = prev_spread - prev_mean
 
         # whether stop loss reached
-        # - check if spread gone to stop loss
         latest_upper_stop_loss = min_spread_w_day_band['upper_stop_loss'].iloc[-1]
         latest_lower_stop_loss = min_spread_w_day_band['lower_stop_loss'].iloc[-1]
 
@@ -98,26 +101,24 @@ for index, row in orders_df.iterrows():
                     orders_df.at[index, 'pair_trade_status'] = 'LOWER_STOPPED'
 
                 # close long
-                # get asset balance #TODO
-                balance = client.get_asset_balance(
-                    asset=long_symbol.replace('USDT', ''))
-                symbol_to_sell = balance['asset']
-                coin_amt_to_sell = round_step_size(
-                    balance['free'], long_tick_size)
-                # sell all #TODO
-                close_long_order = client.order_market_sell(
-                    symbol=long_symbol, quantity=coin_amt_to_sell)
-                print(
-                    f'Closed long order for {long_symbol}. Sold {coin_amt_to_sell} of them.')
+                long_amt = orders_df.at[index, 'long_quantity']
+                close_long_order_info = MarketOrder('SELL', long_amt)
+                close_long_order = ib.placeOrder(contract_long, close_long_order_info)
 
-                # close short #TODO
-                # repurchase
-                close_short_order = '....'
                 print(
-                    f'Closed short order for {short_symbol}. Repaid {coin_amt_to_repay} of them.')
+                    f'Closed long order for {long_symbol}. Sold {long_amt} of them.')
+
+                # close short 
+                short_amt = orders_df.at[index, 'short_quantity']
+                close_short_order_info = MarketOrder('BUY', short_amt)
+                close_short_order = ib.placeOrder(contract_short, close_short_order_info)
+
+                print(
+                    f'Closed short order for {short_symbol}. Sold {short_amt} of them.')
 
                 new_orders_df = pd.concat([new_orders_df,
                                            ib_pairs_order_to_pd_df("CLOSING_TRADE",
+                                                                latest_min,
                                                                 ols_coeff,
                                                                 ols_constant,
                                                                 close_long_order,

@@ -91,9 +91,61 @@ monitored_pairs_df = pd.read_sql(query, conn)
 if os.path.exists(order_csv_file):
     orders_df = pd.read_csv(order_csv_file)
     if orders_df.empty:
-        orders_df = pd.DataFrame()
+        orders_df = pd.DataFrame({
+    'pair_trade_status': pd.Series(dtype='str'),
+    'symbol_Y': pd.Series(dtype='str'),
+    'symbol_X': pd.Series(dtype='str'),
+    'long_symbol': pd.Series(dtype='str'),
+    'long_time': pd.Series(dtype='str'),
+    'long_side': pd.Series(dtype='str'),
+    'long_quantity': pd.Series(dtype='float64'),
+    'long_usdt_amt': pd.Series(dtype='float64'),
+    'long_status': pd.Series(dtype='str'),
+    'long_orderId': pd.Series(dtype='str'),
+    'long_clientOrderId': pd.Series(dtype='str'),
+    'short_symbol': pd.Series(dtype='str'),
+    'short_time': pd.Series(dtype='str'),
+    'short_side': pd.Series(dtype='str'),
+    'short_quantity': pd.Series(dtype='float64'),
+    'short_usdt_amt': pd.Series(dtype='float64'),
+    'short_status': pd.Series(dtype='str'),
+    'short_loanId': pd.Series(dtype='str'),
+    'short_orderId': pd.Series(dtype='str'),
+    'short_clientOrderId': pd.Series(dtype='str'),
+    'ols_coeff': pd.Series(dtype='float64'),
+    'ols_constant': pd.Series(dtype='float64'),
+    'lower_band': pd.Series(dtype='float64'),
+    'spread': pd.Series(dtype='float64'),
+    'upper_band': pd.Series(dtype='float64')
+})
 else:
-    orders_df = pd.DataFrame()
+    orders_df = pd.DataFrame({
+    'pair_trade_status': pd.Series(dtype='str'),
+    'symbol_Y': pd.Series(dtype='str'),
+    'symbol_X': pd.Series(dtype='str'),
+    'long_symbol': pd.Series(dtype='str'),
+    'long_time': pd.Series(dtype='str'),
+    'long_side': pd.Series(dtype='str'),
+    'long_quantity': pd.Series(dtype='float64'),
+    'long_usdt_amt': pd.Series(dtype='float64'),
+    'long_status': pd.Series(dtype='str'),
+    'long_orderId': pd.Series(dtype='str'),
+    'long_clientOrderId': pd.Series(dtype='str'),
+    'short_symbol': pd.Series(dtype='str'),
+    'short_time': pd.Series(dtype='str'),
+    'short_side': pd.Series(dtype='str'),
+    'short_quantity': pd.Series(dtype='float64'),
+    'short_usdt_amt': pd.Series(dtype='float64'),
+    'short_status': pd.Series(dtype='str'),
+    'short_loanId': pd.Series(dtype='str'),
+    'short_orderId': pd.Series(dtype='str'),
+    'short_clientOrderId': pd.Series(dtype='str'),
+    'ols_coeff': pd.Series(dtype='float64'),
+    'ols_constant': pd.Series(dtype='float64'),
+    'lower_band': pd.Series(dtype='float64'),
+    'spread': pd.Series(dtype='float64'),
+    'upper_band': pd.Series(dtype='float64')
+})
 
 for index, row in monitored_pairs_df.iterrows():
     symbol_Y = row['symbol_a'] + 'USDT'
@@ -237,6 +289,7 @@ for index, row in monitored_pairs_df.iterrows():
             send_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df,
                                    pairs_order_to_pd_df("OPEN",
+                                                        latest_min,
                                                         ols_coeff,
                                                         ols_constant,
                                                         long_order,
@@ -263,6 +316,7 @@ for index, row in monitored_pairs_df.iterrows():
             send_executed_orders_to_sql(conn, short_order)
             orders_df = pd.concat([orders_df,
                                    pairs_order_to_pd_df("OPEN",
+                                                        latest_min,
                                                         ols_coeff,
                                                         ols_constant,
                                                         long_order,

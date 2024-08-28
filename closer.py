@@ -71,6 +71,7 @@ for index, row in orders_df.iterrows():
             how='left')
 
         # whether revered back to mean
+        latest_min = min_spread_w_day_band.iloc[-1]
         latest_spread = min_spread_w_day_band['spread'].iloc[-1]
         latest_mean = min_spread_w_day_band['rolling_mean'].iloc[-1]
         prev_spread = min_spread_w_day_band['spread'].iloc[-2]
@@ -103,12 +104,12 @@ for index, row in orders_df.iterrows():
                     orders_df.at[index, 'pair_trade_status'] = 'LOWER_STOPPED'
 
                 # close long
-                # get asset balance
+                # get asset pair bought amt
                 balance = client.get_asset_balance(
                     asset=long_symbol.replace('USDT', ''))
                 symbol_to_sell = balance['asset']
                 coin_amt_to_sell = round_step_size(
-                    balance['free'], long_tick_size)
+                    orders_df.at[index, 'long_quantity'], long_tick_size)
                 # sell all
                 close_long_order = client.order_market_sell(
                     symbol=long_symbol, quantity=coin_amt_to_sell)
@@ -118,8 +119,7 @@ for index, row in orders_df.iterrows():
                 # close short
                 loan_detail = client.get_margin_loan_details(
                     asset=short_symbol.replace(
-                        'USDT', ''), txId=str(
-                        row['short_loanId']))
+                        'USDT', ''), txId=str(row['short_loanId']))
                 coin_amt_to_repay = round_step_size(
                     loan_detail['rows'][0]['principal'], short_tick_size)
                 # buy owed amt and repay loan
@@ -135,7 +135,8 @@ for index, row in orders_df.iterrows():
                     f'Closed short order for {short_symbol}. Repaid {coin_amt_to_repay} of them.')
 
                 new_orders_df = pd.concat([new_orders_df,
-                                           pairs_order_to_pd_df("CLOSING_TRADE",
+                                           pairs_order_to_pd_df("CLOSING_TRADE", 
+                                                                latest_min,
                                                                 ols_coeff,
                                                                 ols_constant,
                                                                 close_long_order,

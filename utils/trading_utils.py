@@ -8,14 +8,14 @@ from psycopg2 import OperationalError
     
 # pairs selection from sql criteria
 MIN_RECENT_COINT = 0.75
-MIN_R_SQUARED = 0.65
+MIN_R_SQUARED = 0.7
 MIN_POTENTIAL_WIN_PCT = 0.01
 
 # trade params
 TOTAL_USDT_PER_TRADE = 50
 BB_BAND_WINDOW = 20 
 BB_SIGNAL_STD_MULT = 1.8
-BB_STOPLOSS_STD_MULT = 2.8
+BB_STOPLOSS_STD_MULT = 3.5
 
 current_date = datetime.now().strftime("%Y-%m-%d")
 strat_csv_file = f'/home/ec2-user/binance_pair_trader/data/strat_df_{current_date}.csv'
@@ -77,8 +77,7 @@ def send_executed_orders_to_sql(conn, order):
       )
       conn.commit()
       print("Order details written to SQL table latest_trades.")
-    
-    
+       
 def candle_transformation(candle):
       output = []
       for entry in candle:
@@ -132,7 +131,7 @@ def get_tick_size(curr_price_Y, curr_price_X):
       x_tick_size = 0.00001 
    return y_tick_size, x_tick_size
 
-def pairs_order_to_pd_df(pair_trade_status, ols_coeff, ols_constant, long_order, short_order, short_loan, symbol_Y, symbol_X):
+def pairs_order_to_pd_df(pair_trade_status, latest_min, ols_coeff, ols_constant, long_order, short_order, short_loan, symbol_Y, symbol_X):
    
    short_order_tranx_time_str = datetime.fromtimestamp(short_order['transactTime'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
    long_order_tranx_time_str = datetime.fromtimestamp(long_order['transactTime'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
@@ -166,7 +165,10 @@ def pairs_order_to_pd_df(pair_trade_status, ols_coeff, ols_constant, long_order,
       'short_orderId': str(short_order['orderId']),
       'short_clientOrderId': str(short_order['clientOrderId']),
       'ols_coeff': ols_coeff,
-      'ols_constant': ols_constant
+      'ols_constant': ols_constant,
+      'lower_band': latest_min['lower_band'],
+      'spread': latest_min['spread'],
+      'upper_band': latest_min['upper_band']
    }])
 
 def calculate_bollinger_bands(df, window, std_dev, stop_loss_std_dev, col_name='spread'):

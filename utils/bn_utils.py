@@ -37,7 +37,6 @@ def bn_pull_input_coins_hist_price_json(symbols, bn_api_key, bn_api_secret, star
               json.dump(checkpoint_data, file, indent=4)
   print('Download completed! :)')
 
-
 def bn_pull_top_coins_hist_price_json(cmc_api_key, bn_api_key, bn_api_secret, start_date, end_date, interval, interval_name, top_n_coins=300):
   # --- CMC
   data = pull_coin_list(top_n_coins, cmc_api_key)

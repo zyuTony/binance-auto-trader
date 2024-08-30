@@ -100,7 +100,7 @@ def candle_transformation(candle):
       return output_df
 
 def get_bn_data(client, symbol): 
-      minute_candles = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1MINUTE)
+      minute_candles = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_2HOUR)
       minute_data = candle_transformation(minute_candles)
  
       daily_candle = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1DAY, "120 day ago UTC")

@@ -15,3 +15,9 @@ DB_PASSWORD = os.getenv('RDS_PASSWORD')
 DB_HOST = os.getenv('RDS_ENDPOINT')
 DB_NAME = 'financial_data'
 
+ 
+client = Client(api_key, api_secret) 
+# get asset pair bought amt
+balance = float(client.get_asset_balance(
+asset='USDT')['free'])
+print(balance)

@@ -10,7 +10,7 @@ from tqdm import tqdm
 import logging
 
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.INFO,
     format='%(asctime)s | %(levelname)8s | %(message)s',
     datefmt='%Y-%m-%d %H:%M' #datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -54,7 +54,8 @@ def avan_intraday_stock_data_as_csv(interval, months, ticker, avan_api_key, outp
     else:
         logging.warning(f"No data retrieved for {ticker}")
         return None
-    
+
+'''grandparents'''  
 class Strategy(ABC):
     
     def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df):
@@ -140,6 +141,7 @@ class Strategy(ABC):
     def sell(self, quantity, execution_time, symbol, tlt_dollar, price):   # different between test and real
         pass
 
+'''parents'''
 class TestStrategy(Strategy):
 
     def buy(self, tlt_dollar, execution_time, symbol, price, quantity): 
@@ -184,7 +186,7 @@ class TestStrategy(Strategy):
         self.indicator_candles_df = self.get_indicators(self.indicator_candles_df)
         self.extra_indicator_candles_df = self.get_extra_indicators(self.extra_indicator_candles_df) if self.extra_indicator_candles_df is not None else None
         
-        
+        # transform based on timeframe of the dataframes
         if trade_df_timestamp == indi_df_timestamp == extra_indi_df_timestamp:
             self.trade_candles_df = pd.merge(self.trade_candles_df, self.indicator_candles_df, on='date', how='left', suffixes=('', '_indi'))
             self.trade_candles_df = pd.merge(self.trade_candles_df, self.extra_indicator_candles_df, on='date', how='left', suffixes=('', '_exindi'))
@@ -217,27 +219,43 @@ class TestStrategy(Strategy):
 
     def trading_summary(self):
         df = self.executions_df
-        # Calculate total profit
+        if df.empty:
+            print("No trades executed! No Summary")
+            return None
+
+        # Calculate profit
         df['profit'] = df.apply(lambda row: row['tlt_dollar'] if row['action'] == 'SELL' else -row['tlt_dollar'], axis=1)
         total_profit = df['profit'].sum()
-        
-        # Count number of buy and sell trades
-        num_buy = df[df['action'] == 'BUY'].shape[0]
-        num_sell = df[df['action'] == 'SELL'].shape[0]
-        
-        # Calculate total trading volume
+
         total_volume = df['tlt_dollar'].sum()
+        total_commission = total_volume * self.commission_pct
         
-        # Prepare summary
+        percent_profit = (total_profit / total_volume) * 100 if total_volume > 0 else 0
+        
+        # Calculate buy and hold
+        trade_df = self.trade_candles_df
+        first_price = trade_df.iloc[0]['close']
+        last_price = trade_df.iloc[-1]['close']
+        buy_and_hold_quantity = total_volume / first_price
+        buy_and_hold_profit = (last_price - first_price) * buy_and_hold_quantity
+        buy_and_hold_percent = (buy_and_hold_profit / total_volume) * 100
+        
+        # Calculate total number of trades
+        total_trades = len(df)
+        
         summary = {
+            "Total Number of Trades": total_trades,
             "Total Profit": f"${total_profit:.2f}",
-            "Number of Buy Trades": num_buy,
-            "Number of Sell Trades": num_sell,
-            "Total Trading Volume": f"${total_volume:.2f}"
+            "Total Trading Volume": f"${total_volume:.2f}",
+            "Percent Profit": f"{percent_profit:.2f}%",
+            "Total Commission Cost": f"${total_commission:.2f}",
+            "Buy and Hold Profit": f"${buy_and_hold_profit:.2f}",
+            "Buy and Hold Percent": f"{buy_and_hold_percent:.2f}%"
         }
+        
         for key, value in summary.items():
             print(f"{key}: {value}")
-            
+        
         return summary
   
 class BinanceProductionStrategy(Strategy):
@@ -376,51 +394,63 @@ class BinanceProductionStrategy(Strategy):
             if open_order['status'] == 'OPEN':
                 self.stepwise_logic_close(candle_df_slice, same_tf, order_index)     
         logging.info(f'Finished runinng once for latest data!')
-      
+
+'''kids'''
 class BuyTheDipStrategy(TestStrategy):
     '''
     INDICATORS: 
-    SPY - 14 RSI; 12 EMA; 26 EMA 
-    traded stock - 14 RSI; 12 EMA; 26 EMA; overnight Return
-    BUY WHEN SPY RSI < 30 AND stock RSI > 70 AND candle returns < 0.03
-    SELL on same day
+    SPY - RSI; EMA1; EMA2 
+    traded stock - RSI; EMA1; EMA2; overnight Return
+    BUY WHEN SPY RSI < spy_rsi_threshold AND stock RSI > stock_rsi_threshold AND candle returns < overnight_return_threshold
+    SELL on same day or when profit threshold is reached
     ''' 
+    def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df,
+                 rsi_window, ema1_span, ema2_span, spy_rsi_threshold, stock_rsi_threshold,
+                 overnight_return_threshold, profit_threshold, max_hold_hours):
+        super().__init__(trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df)
+        self.rsi_window = rsi_window
+        self.ema1_span = ema1_span
+        self.ema2_span = ema2_span
+        self.spy_rsi_threshold = spy_rsi_threshold
+        self.stock_rsi_threshold = stock_rsi_threshold
+        self.overnight_return_threshold = overnight_return_threshold
+        self.profit_threshold = profit_threshold
+        self.max_hold_time = pd.Timedelta(hours=max_hold_hours)
+
     def get_indicators(self, df):
-        
-        # Calculate RSI with a period of 14
+        # Calculate RSI
         delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_window).mean()
         rs = gain / loss
-        df['RSI14'] = 100 - (100 / (1 + rs))
+        df['RSI'] = 100 - (100 / (1 + rs))
         
-        # Calculate EMA 12 and EMA 16
-        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-        df['EMA16'] = df['close'].ewm(span=16, adjust=False).mean()
+        # Calculate EMAs
+        df[f'EMA{self.ema1_span}'] = df['close'].ewm(span=self.ema1_span, adjust=False).mean()
+        df[f'EMA{self.ema2_span}'] = df['close'].ewm(span=self.ema2_span, adjust=False).mean()
         df['overnight_return'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
         return df
     
     def get_extra_indicators(self, df):
-        
-        # Calculate RSI with a period of 14
+        # Calculate RSI
         delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_window).mean()
         rs = gain / loss
-        df['RSI14'] = 100 - (100 / (1 + rs))
+        df['RSI'] = 100 - (100 / (1 + rs))
         
-        # Calculate EMA 12 and EMA 16
-        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-        df['EMA16'] = df['close'].ewm(span=16, adjust=False).mean()
-
+        # Calculate EMAs
+        df[f'EMA{self.ema1_span}'] = df['close'].ewm(span=self.ema1_span, adjust=False).mean()
+        df[f'EMA{self.ema2_span}'] = df['close'].ewm(span=self.ema2_span, adjust=False).mean()
+        df['overnight_return'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
         return df
         
     def stepwise_logic_open(self, trade_candle_df_slice): 
         curr_candle = trade_candle_df_slice 
         # LOGIC 
         
-        if curr_candle['RSI14_exindi'] <= 55 and curr_candle['RSI14'] >= 65:
-            # and curr_candle['overnight_return'] < -0.03:
+        if curr_candle['RSI'] >= self.stock_rsi_threshold and curr_candle[f'EMA{self.ema1_span}']>=curr_candle[f'EMA{self.ema1_span}'] and curr_candle['overnight_return'] < self.overnight_return_threshold:
+            # curr_candle[f'RSI_exindi'] <= self.spy_rsi_threshold and 
             last_update_time = execution_time = curr_candle['date']
             # Check if there's no open DKS order
             if self.open_orders_df.empty or self.open_orders_df[(self.open_orders_df['symbol'] == 'DKS') & (self.open_orders_df['status'] == 'OPEN')].empty:
@@ -430,13 +460,13 @@ class BuyTheDipStrategy(TestStrategy):
                  
                 self.buy(self.tlt_dollar*(1+self.commission_pct), execution_time, symbol, price, quantity)
                 self._update_open_orders_logs(last_update_time, 'OPEN', symbol, self.tlt_dollar, price, quantity)
-                logging.info(f'{last_update_time}: Opened position at {price:.2f} with RSI {curr_candle["RSI14"]:.2f} and overnight return {curr_candle["overnight_return"]:.2%}')
+                logging.info(f'{last_update_time}: Opened position at {price:.2f} with RSI {curr_candle["RSI"]:.2f} and overnight return {curr_candle["overnight_return"]:.2%}')
             else:
                 logging.debug(f"{last_update_time}: DKS position already open, skipping new order")
         else:
-            logging.debug(f"{curr_candle['date']}: opening stand by - extra rsi:{curr_candle['RSI14_exindi']:.2f} - stock rsi:{curr_candle['RSI14']:.2f} - return:{curr_candle['overnight_return']:.4f}")
+            logging.debug(f"{curr_candle['date']}: opening stand by - extra rsi:{curr_candle['RSI_exindi']:.2f} - stock rsi:{curr_candle['RSI']:.2f} - return:{curr_candle['overnight_return']:.2%}")
           
-    def stepwise_logic_close(self, trade_candle_df_slice, order_index):
+    def stepwise_logic_close(self, trade_candle_df_slice,order_index):
         order = self.open_orders_df.iloc[order_index]
         open_price = order['price']
         open_time = pd.to_datetime(order['last_update_time'])
@@ -447,7 +477,8 @@ class BuyTheDipStrategy(TestStrategy):
         
         profit_percentage = (current_price - open_price) / open_price  
         time_difference = current_time - open_time 
-        if profit_percentage >= 0.05 or time_difference >= pd.Timedelta(hours=6):
+        
+        if profit_percentage >= self.profit_threshold or time_difference >= self.max_hold_time:
             execution_time = last_candle['date']
             symbol = order['symbol']
             price = last_candle['close']
@@ -456,10 +487,10 @@ class BuyTheDipStrategy(TestStrategy):
             self.sell(quantity, execution_time, symbol, tlt_dollar*(1-self.commission_pct), current_price)
             self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
             
-            if profit_percentage >= 0.05:
+            if profit_percentage >= self.profit_threshold:
                 logging.info(f'{execution_time}: Closed position with {profit_percentage:.2f}% profit!')
             else:
-                logging.info(f'{execution_time}: Closed position after 6 hours with {profit_percentage:.2f}% profit/loss.')
+                logging.info(f'{execution_time}: Closed position after {self.max_hold_time} with {profit_percentage:.2f}% profit/loss.')
 
 class BNDummyStrategy(BinanceProductionStrategy):
     '''

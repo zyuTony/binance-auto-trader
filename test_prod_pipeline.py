@@ -25,24 +25,22 @@ DB_NAME = 'financial_data'
 # client = Client(api_key, api_secret)
 # min_df_chart, day_df_chart = get_bn_data(client, 'BTCUSDT')
 
-# avan stock data ingestion
-# months = ['2023-08', '2023-09', '2023-10', '2023-11', '2023-12',
-#           '2024-01', '2024-02', '2024-03', '2024-04', '2024-05',
-#           '2024-06', '2024-07', '2024-08']
+# # avan stock data ingestion
+# months = ['2020-01', '2020-02', '2020-03', '2020-04', '2020-05', '2020-06', '2020-07', '2020-08', '2020-09', '2020-10', '2020-11', '2020-12', '2021-01', '2021-02', '2021-03', '2021-04', '2021-05', '2021-06', '2021-07', '2021-08', '2021-09', '2021-10', '2021-11', '2021-12', '2022-01', '2022-02', '2022-03', '2022-04', '2022-05', '2022-06', '2022-07', '2022-08', '2022-09', '2022-10', '2022-11', '2022-12', '2023-01', '2023-02', '2023-03', '2023-04', '2023-05', '2023-06', '2023-07', '2023-08', '2023-09', '2023-10', '2023-11', '2023-12', '2024-01', '2024-02', '2024-03', '2024-04', '2024-05', '2024-06', '2024-07', '2024-08']
 # # Save data to CSV files
-# avan_intraday_stock_data_as_csv(interval='30min', 
+# avan_intraday_stock_data_as_csv(interval='60min', 
 #                                 months=months,
 #                                 ticker='DKS', 
 #                                 avan_api_key=avan_api_key, 
 #                                 outputsize='full').to_csv('min_df_chart.csv', index=False)
 
-avan_daily_stock_data_as_csv(ticker='DKS', 
-                             avan_api_key=avan_api_key, 
-                             outputsize='full', num_rows=720).to_csv('day_df_chart.csv', index=False)
+# avan_daily_stock_data_as_csv(ticker='DKS', 
+#                              avan_api_key=avan_api_key, 
+#                              outputsize='full', num_rows=2000).to_csv('day_df_chart.csv', index=False)
 
-avan_daily_stock_data_as_csv(ticker='GAP', 
-                             avan_api_key=avan_api_key, 
-                             outputsize='full', num_rows=720).to_csv('extra_day_df_chart.csv', index=False)
+# avan_daily_stock_data_as_csv(ticker='GAP', 
+#                              avan_api_key=avan_api_key, 
+#                              outputsize='full', num_rows=2000).to_csv('extra_day_df_chart.csv', index=False)
 
 # Read data from CSV files
 min_df_chart = pd.read_csv('./min_df_chart.csv')
@@ -53,12 +51,21 @@ orders_df = pd.DataFrame()
 exec_df = pd.DataFrame()  
 
 ts = BuyTheDipStrategy(trade_candles_df=min_df_chart, 
-                        indicator_candles_df=day_df_chart, 
-                        executions_df=exec_df, 
-                        open_orders_df=orders_df,
-                        tlt_dollar=100,
-                        commission_pct=0.001,
-                        extra_indicator_candles_df=extra_day_df_chart) # for test only
+                       indicator_candles_df=day_df_chart, 
+                       executions_df=exec_df, 
+                       open_orders_df=orders_df,
+                       tlt_dollar=300,
+                       commission_pct=0.001,
+                       extra_indicator_candles_df=extra_day_df_chart,
+                       # fine tuning
+                       rsi_window=14,
+                       ema1_span=12,
+                       ema2_span=26,
+                       spy_rsi_threshold=-1,
+                       stock_rsi_threshold=75,
+                       overnight_return_threshold=-0.02,
+                       profit_threshold=0.05,
+                       max_hold_hours=6)
 ts.run_test()
 ts.trading_summary()
 

@@ -4,17 +4,68 @@ from binance.client import Client
 from utils.trading_utils import *
 from binance.enums import *
 from binance.helpers import round_step_size
-import random
+import requests
+from io import StringIO
+from tqdm import tqdm
+import logging
 
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s | %(levelname)8s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M' #datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+def avan_daily_stock_data_as_csv(ticker, avan_api_key, outputsize, num_rows=None):
+    url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize={outputsize}&datatype=csv&apikey={avan_api_key}'
+    response = requests.get(url)
+    if response.status_code == 200:
+        df = pd.read_csv(StringIO(response.text))
+        df = df.rename(columns={'timestamp': 'date'})
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date', ascending=True)  # Sort in ascending order first
+        if num_rows is not None:
+            df = df.tail(num_rows)  # Get only the last num_rows
+        logging.info(f"{ticker} daily retrieved!")
+        return df.reset_index(drop=True)
+    else:
+        logging.error(f"Error fetching {ticker}: {response.status_code}")
+        return None
+        
+def avan_intraday_stock_data_as_csv(interval, months, ticker, avan_api_key, outputsize):
+    all_data = []
+    for month in months:
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol={ticker}&interval={interval}&month={month}&outputsize={outputsize}&datatype=csv&apikey={avan_api_key}'
+        response = requests.get(url)
+        if response.status_code == 200:
+            df = pd.read_csv(StringIO(response.text))
+            df = df.rename(columns={'timestamp': 'date'})
+            df['date'] = pd.to_datetime(df['date'])
+            all_data.append(df)
+            logging.info(f"{ticker} intraday data for {month} retrieved!")
+        else:
+            logging.error(f"Error fetching {ticker} for {month}: {response.status_code}")
+    
+    if all_data:
+        combined_df = pd.concat(all_data, ignore_index=True)
+        combined_df = combined_df.sort_values('date', ascending=True)
+        combined_df = combined_df.drop_duplicates(subset=['date'], keep='first')
+        logging.info(f"Combined intraday data for {ticker} retrieved!")
+        return combined_df.reset_index(drop=True)
+    else:
+        logging.warning(f"No data retrieved for {ticker}")
+        return None
+    
 class Strategy(ABC):
     
-    def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar=100):
+    def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df):
         self.trade_candles_df = trade_candles_df
         self.indicator_candles_df = indicator_candles_df
+        self.extra_indicator_candles_df = extra_indicator_candles_df
         self.executions_df = executions_df
         self.open_orders_df = open_orders_df
         self.tlt_dollar = tlt_dollar
-    
+        self.commission_pct = commission_pct
+        
     def _check_candle_frequency(self, df):
         # Check if 'date' column exists
         if 'date' not in df.columns:
@@ -41,7 +92,6 @@ class Strategy(ABC):
             return "1 Hour data"
         elif time_diff == pd.Timedelta(hours=2):
             return "2 Hour data"
-        
         else:
             return f"Unknown frequency: {time_diff}"
 
@@ -79,6 +129,10 @@ class Strategy(ABC):
         pass
     
     @abstractmethod
+    def get_extra_indicators(self, df):
+        pass
+    
+    @abstractmethod
     def buy(self, tlt_dollar, execution_time, symbol, price, quantity):  # different between test and real
         pass
 
@@ -87,10 +141,6 @@ class Strategy(ABC):
         pass
 
 class TestStrategy(Strategy):
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.commission_pct = 0.001  # Default commission percentage of 0.1%
 
     def buy(self, tlt_dollar, execution_time, symbol, price, quantity): 
         self._update_execution_logs(execution_time, 'BUY', symbol, tlt_dollar, price, quantity)
@@ -122,28 +172,48 @@ class TestStrategy(Strategy):
                 self.sell(quantity, execution_time, symbol, tlt_dollar, current_price)
                 self.open_orders_df.at[index, 'status'] = 'CLOSED'
                 num_open_trades += 1
-        print(f'Closed all {num_open_trades} remaining open trades!')
-           
+        logging.info(f'Closed all {num_open_trades} remaining open trades!')
+    
     def run_test(self): 
+        # check df frequencies
+        trade_df_timestamp = self._check_candle_frequency(self.trade_candles_df)
+        indi_df_timestamp = self._check_candle_frequency(self.indicator_candles_df)
+        extra_indi_df_timestamp = self._check_candle_frequency(self.extra_indicator_candles_df)
+        
+        # get indicators
         self.indicator_candles_df = self.get_indicators(self.indicator_candles_df)
+        self.extra_indicator_candles_df = self.get_extra_indicators(self.extra_indicator_candles_df) if self.extra_indicator_candles_df is not None else None
         
-        if self._check_candle_frequency(self.trade_candles_df) == self._check_candle_frequency(self.indicator_candles_df):
-            same_tf = True
+        
+        if trade_df_timestamp == indi_df_timestamp == extra_indi_df_timestamp:
+            self.trade_candles_df = pd.merge(self.trade_candles_df, self.indicator_candles_df, on='date', how='left', suffixes=('', '_indi'))
+            self.trade_candles_df = pd.merge(self.trade_candles_df, self.extra_indicator_candles_df, on='date', how='left', suffixes=('', '_exindi'))
+        elif indi_df_timestamp == extra_indi_df_timestamp and trade_df_timestamp != indi_df_timestamp:
+            self.trade_candles_df['date_day'] = self.trade_candles_df['date'].dt.date
+            self.indicator_candles_df['date'] = pd.to_datetime(self.indicator_candles_df['date']).dt.date
+            self.extra_indicator_candles_df['date'] = pd.to_datetime(self.extra_indicator_candles_df['date']).dt.date
+            
+            self.trade_candles_df = self.trade_candles_df.merge(self.indicator_candles_df, left_on='date_day', right_on='date', suffixes=('', '_indi'), how='left')
+            self.trade_candles_df = self.trade_candles_df.merge(self.extra_indicator_candles_df, left_on='date_day', right_on='date', suffixes=('', '_exindi'), how='left')
+            logging.info('All Columns in trading df: ', self.trade_candles_df.columns) 
         else:
-            same_tf = False
-        
+            logging.warning("Indicator and extra indicator dataframes have different timeframes. Will not run test")
+            return -1
         # go through the all trade df row by row
-        for _, candle_df_slice in self.trade_candles_df.iterrows(): 
+        # for _, candle_df_slice in tqdm(self.trade_candles_df.iterrows()): 
+        for idx in tqdm(range(len(self.trade_candles_df))): 
+            candle_df_slice = self.trade_candles_df.iloc[idx]
+            
             # opening 
-            self.stepwise_logic_open(candle_df_slice, same_tf)
+            self.stepwise_logic_open(candle_df_slice)
             # closing
             for order_index, open_order in self.open_orders_df.iterrows():
                 if open_order['status'] == 'OPEN':
-                    self.stepwise_logic_close(candle_df_slice, same_tf, order_index)
+                    self.stepwise_logic_close(candle_df_slice, order_index)
         
         # wrap up all trades
         self.close_all_trades()        
-        print(f'Finished test run!')
+        logging.info(f'Finished test run!')
 
     def trading_summary(self):
         df = self.executions_df
@@ -169,14 +239,14 @@ class TestStrategy(Strategy):
             print(f"{key}: {value}")
             
         return summary
-
-    
+  
 class BinanceProductionStrategy(Strategy):
     
-    def __init__(self, bn_client, trade_candles_df, indicator_candles_df, executions_df, ideal_executions_df, open_orders_df, tlt_dollar):
-        super().__init__(trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar)
+    def __init__(self, bn_client, trade_candles_df, indicator_candles_df, executions_df, ideal_executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df):
+        super().__init__(trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df)
         self.bn_client = bn_client
-        self.ideal_executions_df = ideal_executions_df # the price we want to buy
+        self.commission_pct=0
+        self.ideal_executions_df = ideal_executions_df # the price we wanted to buy - to cross check with actual
     
     def _update_ideal_execution_logs(self, execution_time, action, symbol, tlt_dollar, price, quantity):   
         new_exec = {
@@ -210,7 +280,7 @@ class BinanceProductionStrategy(Strategy):
             order_info = self.bn_client.order_market_buy(symbol=symbol, 
                                                          quantity=round_step_size(quantity, self._get_tick_size(price)))
         except Exception as e:
-            print(f"Error executing buy order: {str(e)}")
+            logging.error(f"Error executing buy order: {str(e)}")
             return None
         
         # log order
@@ -227,7 +297,7 @@ class BinanceProductionStrategy(Strategy):
                                     symbol, tlt_dollar, 
                                     price, quantity)
         
-        print(f'longed {symbol}. bought {executed_quantity} of them of ${executed_tlt_dollar}!')
+        logging.info(f'longed {symbol}. bought {executed_quantity} of them of ${executed_tlt_dollar}!')
         return {'executed_time_str': executed_time_str,
                 'executed_quantity': executed_quantity,
                 'executed_tlt_dollar': executed_tlt_dollar,
@@ -243,7 +313,7 @@ class BinanceProductionStrategy(Strategy):
             order_info = self.bn_client.order_market_sell(symbol=symbol, 
                                                          quantity=round_step_size(quantity, self._get_tick_size(price)))
         except Exception as e:
-            print(f"Error executing sell order: {str(e)}")
+            logging.error(f"Error executing sell order: {str(e)}")
             return None
         
         # log order
@@ -260,7 +330,7 @@ class BinanceProductionStrategy(Strategy):
                                     symbol, tlt_dollar, 
                                     price, quantity)
         
-        print(f'Sold {symbol}, {quantity} of them.')
+        logging.info(f'Sold {symbol}, {quantity} of them.')
         return {'executed_time_str': executed_time_str,
                 'executed_quantity': executed_quantity,
                 'executed_tlt_dollar': executed_tlt_dollar,
@@ -286,11 +356,13 @@ class BinanceProductionStrategy(Strategy):
                                     symbol, tlt_dollar, 
                                     price, balance_amt)
         
-        print(f'Sold ALL {symbol}, {balance_amt} of them.')
+        logging.info(f'Sold ALL {symbol}, {balance_amt} of them.')
     
     def run_once(self): 
         self.indicator_candles_df = self.get_indicators(self.indicator_candles_df)
-        
+        if self.extra_indicator_candles_df is not None:
+            self.extra_indicator_candles_df = self.get_extra_indicators(self.extra_indicator_candles_df)
+            
         if self._check_candle_frequency(self.trade_candles_df) == self._check_candle_frequency(self.indicator_candles_df):
             same_tf = True
         else:
@@ -303,7 +375,91 @@ class BinanceProductionStrategy(Strategy):
         for order_index, open_order in self.open_orders_df.iterrows():
             if open_order['status'] == 'OPEN':
                 self.stepwise_logic_close(candle_df_slice, same_tf, order_index)     
-        print(f'Finished runinng once for latest data!')
+        logging.info(f'Finished runinng once for latest data!')
+      
+class BuyTheDipStrategy(TestStrategy):
+    '''
+    INDICATORS: 
+    SPY - 14 RSI; 12 EMA; 26 EMA 
+    traded stock - 14 RSI; 12 EMA; 26 EMA; overnight Return
+    BUY WHEN SPY RSI < 30 AND stock RSI > 70 AND candle returns < 0.03
+    SELL on same day
+    ''' 
+    def get_indicators(self, df):
+        
+        # Calculate RSI with a period of 14
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI14'] = 100 - (100 / (1 + rs))
+        
+        # Calculate EMA 12 and EMA 16
+        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
+        df['EMA16'] = df['close'].ewm(span=16, adjust=False).mean()
+        df['overnight_return'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
+        return df
+    
+    def get_extra_indicators(self, df):
+        
+        # Calculate RSI with a period of 14
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI14'] = 100 - (100 / (1 + rs))
+        
+        # Calculate EMA 12 and EMA 16
+        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
+        df['EMA16'] = df['close'].ewm(span=16, adjust=False).mean()
+
+        return df
+        
+    def stepwise_logic_open(self, trade_candle_df_slice): 
+        curr_candle = trade_candle_df_slice 
+        # LOGIC 
+        
+        if curr_candle['RSI14_exindi'] <= 55 and curr_candle['RSI14'] >= 65:
+            # and curr_candle['overnight_return'] < -0.03:
+            last_update_time = execution_time = curr_candle['date']
+            # Check if there's no open DKS order
+            if self.open_orders_df.empty or self.open_orders_df[(self.open_orders_df['symbol'] == 'DKS') & (self.open_orders_df['status'] == 'OPEN')].empty:
+                symbol = 'DKS'   
+                price = curr_candle['close']
+                quantity = self.tlt_dollar / price   
+                 
+                self.buy(self.tlt_dollar*(1+self.commission_pct), execution_time, symbol, price, quantity)
+                self._update_open_orders_logs(last_update_time, 'OPEN', symbol, self.tlt_dollar, price, quantity)
+                logging.info(f'{last_update_time}: Opened position at {price:.2f} with RSI {curr_candle["RSI14"]:.2f} and overnight return {curr_candle["overnight_return"]:.2%}')
+            else:
+                logging.debug(f"{last_update_time}: DKS position already open, skipping new order")
+        else:
+            logging.debug(f"{curr_candle['date']}: opening stand by - extra rsi:{curr_candle['RSI14_exindi']:.2f} - stock rsi:{curr_candle['RSI14']:.2f} - return:{curr_candle['overnight_return']:.4f}")
+          
+    def stepwise_logic_close(self, trade_candle_df_slice, order_index):
+        order = self.open_orders_df.iloc[order_index]
+        open_price = order['price']
+        open_time = pd.to_datetime(order['last_update_time'])
+        
+        last_candle = trade_candle_df_slice
+        current_price = last_candle['close']
+        current_time = pd.to_datetime(last_candle['date'])
+        
+        profit_percentage = (current_price - open_price) / open_price  
+        time_difference = current_time - open_time 
+        if profit_percentage >= 0.05 or time_difference >= pd.Timedelta(hours=6):
+            execution_time = last_candle['date']
+            symbol = order['symbol']
+            price = last_candle['close']
+            quantity = order['quantity']
+            tlt_dollar = price * quantity
+            self.sell(quantity, execution_time, symbol, tlt_dollar*(1-self.commission_pct), current_price)
+            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
+            
+            if profit_percentage >= 0.05:
+                logging.info(f'{execution_time}: Closed position with {profit_percentage:.2f}% profit!')
+            else:
+                logging.info(f'{execution_time}: Closed position after 6 hours with {profit_percentage:.2f}% profit/loss.')
 
 class BNDummyStrategy(BinanceProductionStrategy):
     '''
@@ -335,9 +491,9 @@ class BNDummyStrategy(BinanceProductionStrategy):
                                           executed_order['executed_tlt_dollar'], 
                                           executed_order['executed_price'], 
                                           executed_order['executed_quantity'])
-            print(f'{last_update_time}: Opened position at {price:.2f}')
+            logging.info(f'{last_update_time}: Opened position at {price:.2f}')
         else:
-            print('not opening')
+            logging.debug('not opening')
             
     def stepwise_logic_close(self, trade_candle_df_slice, same_tf, order_index):
         order = self.open_orders_df.iloc[order_index]
@@ -355,10 +511,8 @@ class BNDummyStrategy(BinanceProductionStrategy):
             
             executed_order = self.sell(quantity, execution_time, symbol, tlt_dollar, current_price)
             self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
-            print(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
+            logging.info(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
           
-
-        
 class DummyStrategy(TestStrategy):
     '''
     INDICATORS: None
@@ -390,9 +544,9 @@ class DummyStrategy(TestStrategy):
                                           executed_order['executed_tlt_dollar'], 
                                           executed_order['executed_price'], 
                                           executed_order['executed_quantity'])
-            print(f'{last_update_time}: Opened position at {price:.2f}')
+            logging.info(f'{last_update_time}: Opened position at {price:.2f}')
         else:
-            print('not opening')
+            logging.debug('not opening')
             
     def stepwise_logic_close(self, trade_candle_df_slice, same_tf, order_index):
         order = self.open_orders_df.iloc[order_index]
@@ -410,76 +564,5 @@ class DummyStrategy(TestStrategy):
             
             executed_order = self.sell(quantity, execution_time, symbol, tlt_dollar, current_price)
             self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
-            print(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
-          
-
-class SimpleTestStrategy(TestStrategy):
-    '''
-    INDICATORS: 14 RSI; 12 EMA; 26 EMA; Candle Return
-    BUY WHEN RSI > 80 AND candle returns
-    SELL WHEN after 6 hours OR profit reach 0.05%
-    '''
-    def get_indicators(self, df):
-        
-        # Calculate RSI with a period of 14
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI14'] = 100 - (100 / (1 + rs))
-        
-        # Calculate EMA 12 and EMA 16
-        df['EMA12'] = df['close'].ewm(span=12, adjust=False).mean()
-        df['EMA16'] = df['close'].ewm(span=16, adjust=False).mean()
-        
-        df['candle_return'] = (df['close'] - df['open']) / df['close'] 
-        
-        return df
-    
-    def stepwise_logic_open(self, trade_candle_df_slice, same_tf): 
-        last_candle = trade_candle_df_slice 
-        if same_tf:
-            # use indi same as trading tf
-            indicator_row = self.indicator_candles_df[self.indicator_candles_df['date'] == last_candle['date']].iloc[0] # same tf
-        else:
-            # manual update if timeframe different TODO
-            indicator_row = self.indicator_candles_df[self.indicator_candles_df['date'] == str(pd.to_datetime(last_candle['date']).date())].iloc[0]  
-
-        # LOGIC 
-        if indicator_row['RSI14'] > 75 and indicator_row['candle_return'] < -0.001:
-            last_update_time = execution_time = last_candle['date']
-            symbol = 'BTCUSDT'   
-            price = last_candle['close']
-            quantity = self.tlt_dollar / price   
-             
-            self.buy(self.tlt_dollar*(1+self.comission_pct), execution_time, symbol, price, quantity)
-            self._update_open_orders_logs(last_update_time, 'OPEN', symbol, self.tlt_dollar, price, quantity)
-            print(f'{last_update_time}: Opened position at {price:.2f} with RSI {indicator_row["RSI14"]:.2f} and day return {indicator_row["candle_return"]*100:.2%}')
-          
-    def stepwise_logic_close(self, trade_candle_df_slice, same_tf, order_index):
-        order = self.open_orders_df.iloc[order_index]
-        open_price = order['price']
-        open_time = pd.to_datetime(order['last_update_time'])
-        
-        last_candle = trade_candle_df_slice
-        current_price = last_candle['close']
-        current_time = pd.to_datetime(last_candle['date'])
-        
-        profit_percentage = (current_price - open_price) / open_price  
-        time_difference = current_time - open_time
- 
-        if profit_percentage >= 0.05 or time_difference >= pd.Timedelta(hours=24):
-            execution_time = last_candle['date']
-            symbol = order['symbol']
-            price = last_candle['close']
-            quantity = order['quantity']
-            tlt_dollar = price * quantity
-            self.sell(quantity, execution_time, symbol, tlt_dollar*(1-self.comission_pct), current_price)
-            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
-            
-            if profit_percentage >= 0.05:
-                print(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
-            else:
-                print(f'{execution_time}: Closed position after 6 hours with {profit_percentage*100:.2f}% profit/loss.')
-        
-              
+            logging.info(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
+   

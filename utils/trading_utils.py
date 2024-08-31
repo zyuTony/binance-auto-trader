@@ -215,7 +215,7 @@ def order_to_pd_df(order, symbol_Y, symbol_X, margin_type):
       'orderId': order['orderId'],
       'clientOrderId': order['clientOrderId']
    }])
-
+ 
 # KLINE_INTERVAL_1MINUTE 
 # KLINE_INTERVAL_3MINUTE 
 # KLINE_INTERVAL_5MINUTE 

@@ -117,8 +117,6 @@ def agg_data_to_csv(output_file, coin_list=None, num_of_coins=200):
     print("Data has been written to coin_prices.csv")
     return df
  
- 
-
 # KLINE_INTERVAL_1MINUTE 
 # KLINE_INTERVAL_3MINUTE 
 # KLINE_INTERVAL_5MINUTE 

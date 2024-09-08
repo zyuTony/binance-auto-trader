@@ -5,6 +5,8 @@ from utils.trading_utils import *
 from binance.enums import *
 from binance.helpers import round_step_size
 import requests
+import os 
+from dotenv import load_dotenv
 from io import StringIO
 from tqdm import tqdm
 import logging
@@ -22,6 +24,7 @@ def avan_daily_stock_data_as_csv(ticker, avan_api_key, outputsize, num_rows=None
         df = pd.read_csv(StringIO(response.text))
         df = df.rename(columns={'timestamp': 'date'})
         df['date'] = pd.to_datetime(df['date'])
+        df['symbol'] = ticker  # Add symbol column after date
         df = df.sort_values('date', ascending=True)  # Sort in ascending order first
         if num_rows is not None:
             df = df.tail(num_rows)  # Get only the last num_rows
@@ -40,6 +43,7 @@ def avan_intraday_stock_data_as_csv(interval, months, ticker, avan_api_key, outp
             df = pd.read_csv(StringIO(response.text))
             df = df.rename(columns={'timestamp': 'date'})
             df['date'] = pd.to_datetime(df['date'])
+            df['symbol'] = ticker  # Add symbol column after date
             all_data.append(df)
             logging.info(f"{ticker} intraday data for {month} retrieved!")
         else:
@@ -58,14 +62,18 @@ def avan_intraday_stock_data_as_csv(interval, months, ticker, avan_api_key, outp
 '''grandparents'''  
 class Strategy(ABC):
     
-    def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df):
+    def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df, profit_threshold, stoploss_threshold, max_open_orders_per_symbol, max_open_orders_total):
         self.trade_candles_df = trade_candles_df
         self.indicator_candles_df = indicator_candles_df
         self.extra_indicator_candles_df = extra_indicator_candles_df
         self.executions_df = executions_df
         self.open_orders_df = open_orders_df
         self.tlt_dollar = tlt_dollar
+        self.profit_threshold = profit_threshold
+        self.stoploss_threshold = stoploss_threshold
         self.commission_pct = commission_pct
+        self.max_open_orders_per_symbol = max_open_orders_per_symbol
+        self.max_open_orders_total = max_open_orders_total
         
     def _check_candle_frequency(self, df):
         # Check if 'date' column exists
@@ -93,6 +101,10 @@ class Strategy(ABC):
             return "1 Hour data"
         elif time_diff == pd.Timedelta(hours=2):
             return "2 Hour data"
+        elif time_diff == pd.Timedelta(hours=4):
+            return "4 Hour data"
+        elif time_diff == pd.Timedelta(hours=12):
+            return "12 Hour data"
         else:
             return f"Unknown frequency: {time_diff}"
 
@@ -141,6 +153,7 @@ class Strategy(ABC):
     def sell(self, quantity, execution_time, symbol, tlt_dollar, price):   # different between test and real
         pass
 
+
 '''parents'''
 class TestStrategy(Strategy):
 
@@ -180,27 +193,54 @@ class TestStrategy(Strategy):
         # check df frequencies
         trade_df_timestamp = self._check_candle_frequency(self.trade_candles_df)
         indi_df_timestamp = self._check_candle_frequency(self.indicator_candles_df)
-        extra_indi_df_timestamp = self._check_candle_frequency(self.extra_indicator_candles_df)
+        extra_indi_df_timestamp = self._check_candle_frequency(self.extra_indicator_candles_df) if self.extra_indicator_candles_df is not None else indi_df_timestamp
         
         # get indicators
         self.indicator_candles_df = self.get_indicators(self.indicator_candles_df)
         self.extra_indicator_candles_df = self.get_extra_indicators(self.extra_indicator_candles_df) if self.extra_indicator_candles_df is not None else None
         
         # transform based on timeframe of the dataframes
+        # deal with hourly trade, hourly indi, hourly extra indi 
         if trade_df_timestamp == indi_df_timestamp == extra_indi_df_timestamp:
-            self.trade_candles_df = pd.merge(self.trade_candles_df, self.indicator_candles_df, on='date', how='left', suffixes=('', '_indi'))
-            self.trade_candles_df = pd.merge(self.trade_candles_df, self.extra_indicator_candles_df, on='date', how='left', suffixes=('', '_exindi'))
-        elif indi_df_timestamp == extra_indi_df_timestamp and trade_df_timestamp != indi_df_timestamp:
-            self.trade_candles_df['date_day'] = self.trade_candles_df['date'].dt.date
-            self.indicator_candles_df['date'] = pd.to_datetime(self.indicator_candles_df['date']).dt.date
-            self.extra_indicator_candles_df['date'] = pd.to_datetime(self.extra_indicator_candles_df['date']).dt.date
+            # Shift indicator dataframes by one row
+            shifted_indicator_df = self.indicator_candles_df.shift(1)
+            shifted_indicator_df['date'] = self.indicator_candles_df['date']
             
-            self.trade_candles_df = self.trade_candles_df.merge(self.indicator_candles_df, left_on='date_day', right_on='date', suffixes=('', '_indi'), how='left')
-            self.trade_candles_df = self.trade_candles_df.merge(self.extra_indicator_candles_df, left_on='date_day', right_on='date', suffixes=('', '_exindi'), how='left')
-            logging.info('All Columns in trading df: ', self.trade_candles_df.columns) 
+            self.trade_candles_df = pd.merge(self.trade_candles_df, shifted_indicator_df, on='date', how='left', suffixes=('', '_indi'))
+            
+            if self.extra_indicator_candles_df is not None:
+                shifted_extra_indicator_df = self.extra_indicator_candles_df.shift(1)
+                shifted_extra_indicator_df['date'] = self.extra_indicator_candles_df['date']
+                
+                self.trade_candles_df = pd.merge(self.trade_candles_df, shifted_extra_indicator_df, on='date', how='left', suffixes=('', '_exindi'))
+        # deal with hourly trade, daily indi, daily extra indi         
+        elif trade_df_timestamp != indi_df_timestamp and indi_df_timestamp == extra_indi_df_timestamp and indi_df_timestamp=="Daily data":
+            self.trade_candles_df['date_day'] = self.trade_candles_df['date'].dt.date
+            indicator_candles_df_shifted = self.indicator_candles_df.copy()
+            indicator_candles_df_shifted['date'] = pd.to_datetime(indicator_candles_df_shifted['date']).dt.date + pd.Timedelta(days=1)
+            self.trade_candles_df = self.trade_candles_df.merge(indicator_candles_df_shifted, left_on='date_day', right_on='date', suffixes=('', '_indi'), how='left')
+            
+            if self.extra_indicator_candles_df is not None:
+                extra_indicator_candles_df_shifted = self.extra_indicator_candles_df.copy()
+                extra_indicator_candles_df_shifted['date'] = pd.to_datetime(extra_indicator_candles_df_shifted['date']).dt.date + pd.Timedelta(days=1)
+                self.trade_candles_df = self.trade_candles_df.merge(extra_indicator_candles_df_shifted, left_on='date_day', right_on='date', suffixes=('', '_exindi'), how='left')
+        # deal with hourly trade, hourly indi, daily extra indi 
+        elif trade_df_timestamp == indi_df_timestamp and indi_df_timestamp != extra_indi_df_timestamp and extra_indi_df_timestamp=="Daily data": 
+            shifted_indicator_df = self.indicator_candles_df.shift(1)
+            shifted_indicator_df['date'] = self.indicator_candles_df['date']
+            self.trade_candles_df = pd.merge(self.trade_candles_df, shifted_indicator_df, on='date', how='left', suffixes=('', '_indi'))
+            
+            if self.extra_indicator_candles_df is not None:
+                self.trade_candles_df['date_day'] = self.trade_candles_df['date'].dt.date
+                extra_indicator_candles_df_shifted = self.extra_indicator_candles_df.copy()
+                extra_indicator_candles_df_shifted['date'] = pd.to_datetime(extra_indicator_candles_df_shifted['date']).dt.date + pd.Timedelta(days=1)
+                self.trade_candles_df = self.trade_candles_df.merge(extra_indicator_candles_df_shifted, left_on='date_day', right_on='date', suffixes=('', '_exindi'), how='left')
+
         else:
-            logging.warning("Indicator and extra indicator dataframes have different timeframes. Will not run test")
+            logging.error(f"problem with indicator timeframe: trade:{trade_df_timestamp}, indi:{indi_df_timestamp}, extra indi:{extra_indi_df_timestamp}")
             return -1
+        
+        logging.info('All Columns in trading df: %s', self.trade_candles_df.columns) 
         # go through the all trade df row by row
         # for _, candle_df_slice in tqdm(self.trade_candles_df.iterrows()): 
         for idx in tqdm(range(len(self.trade_candles_df))): 
@@ -210,7 +250,7 @@ class TestStrategy(Strategy):
             self.stepwise_logic_open(candle_df_slice)
             # closing
             for order_index, open_order in self.open_orders_df.iterrows():
-                if open_order['status'] == 'OPEN':
+                if open_order['status'] == 'OPEN' and open_order['symbol'] == candle_df_slice['symbol']:
                     self.stepwise_logic_close(candle_df_slice, order_index)
         
         # wrap up all trades
@@ -220,51 +260,130 @@ class TestStrategy(Strategy):
     def trading_summary(self):
         df = self.executions_df
         if df.empty:
-            print("No trades executed! No Summary")
+            logging.warning("No trades executed! No Summary")
             return None
 
-        # Calculate profit
-        df['profit'] = df.apply(lambda row: row['tlt_dollar'] if row['action'] == 'SELL' else -row['tlt_dollar'], axis=1)
-        total_profit = df['profit'].sum()
+        # Calculate profit for each trade
+        df['trade_profit'] = 0.0
+        df['trade_duration'] = pd.Timedelta(0)
 
-        total_volume = df['tlt_dollar'].sum()
+        buy_stack = []
+        total_profit = 0.0
+        total_trades = 0
+        total_volume = 0.0
+
+        for _, row in df.iterrows():
+            if row['action'] == 'BUY':
+                buy_stack.append(row)
+                total_volume += row['tlt_dollar']
+            elif row['action'] == 'SELL':
+                if buy_stack:
+                    buy_order = buy_stack.pop(0)
+                    profit = row['tlt_dollar'] - buy_order['tlt_dollar']
+                    df.loc[row.name, 'trade_profit'] = profit
+                    trade_duration = row['execution_time'] - buy_order['execution_time']
+                    df.loc[row.name, 'trade_duration'] = trade_duration
+                    total_profit += profit
+                    total_trades += 1
+                    total_volume += row['tlt_dollar']
+
         total_commission = total_volume * self.commission_pct
         
-        percent_profit = (total_profit / total_volume) * 100 if total_volume > 0 else 0
-        
         # Calculate buy and hold
-        trade_df = self.trade_candles_df
-        first_price = trade_df.iloc[0]['close']
-        last_price = trade_df.iloc[-1]['close']
-        buy_and_hold_quantity = total_volume / first_price
-        buy_and_hold_profit = (last_price - first_price) * buy_and_hold_quantity
-        buy_and_hold_percent = (buy_and_hold_profit / total_volume) * 100
+        buy_orders = df[df['action'] == 'BUY']
+        sell_orders = df[df['action'] == 'SELL']
+        buy_and_hold_profit = sum(
+            sell_orders[sell_orders['symbol'] == row['symbol']].iloc[-1]['price'] * row['quantity'] - row['tlt_dollar']
+            for _, row in buy_orders.iterrows()
+        )
+        buy_and_hold_percent = (buy_and_hold_profit / buy_orders['tlt_dollar'].sum()) * 100 if not buy_orders.empty else 0
         
-        # Calculate total number of trades
-        total_trades = len(df)
-        
+        # Calculate win rate
+        profitable_trades = df[df['trade_profit'] > 0]
+        win_rate = len(profitable_trades) / total_trades * 100 if total_trades > 0 else 0
+
+        # Calculate P&L
+        total_money_made = df[df['trade_profit'] > 0]['trade_profit'].sum()
+        total_money_lost = abs(df[df['trade_profit'] < 0]['trade_profit'].sum())
+
+        # Calculate trade duration statistics
+        trade_durations = df[df['trade_duration'] > pd.Timedelta(0)]['trade_duration']
+        avg_trade_duration = trade_durations.mean()
+        median_trade_duration = trade_durations.median()
+
         summary = {
             "Total Number of Trades": total_trades,
-            "Total Profit": f"${total_profit:.2f}",
-            "Total Trading Volume": f"${total_volume:.2f}",
-            "Percent Profit": f"{percent_profit:.2f}%",
+            "Total Profit": f"${total_profit:.0f}",
+            "Total Trading Volume": f"${total_volume:.0f}",
+            "Profit per Trade": f"${total_profit/total_trades:.2f}" if total_trades > 0 else "$0.00",
+            "% Profit per Trade": f"{(total_profit/total_trades)/self.tlt_dollar:.2%}" if total_trades > 0 else "0.00%",
             "Total Commission Cost": f"${total_commission:.2f}",
-            "Buy and Hold Profit": f"${buy_and_hold_profit:.2f}",
-            "Buy and Hold Percent": f"{buy_and_hold_percent:.2f}%"
+            "Buy and Hold Profit": f"${buy_and_hold_profit:.0f}",
+            "Buy and Hold Percent": f"{buy_and_hold_percent:.2f}%",
+            "Trades Win Rate": f"{win_rate:.0f}%", 
+            "Total Money Made": f"${total_money_made:.0f}",
+            "Total Money Lost": f"${total_money_lost:.0f}",
+            "Money Win/Loss Ratio": f"{total_money_made / total_money_lost:.1f}" if total_money_lost != 0 else "N/A",
+            "Average Trade Duration": str(avg_trade_duration),
+            "Median Trade Duration": str(median_trade_duration),
+            "key_metric_profit_pct": round((total_profit/total_trades)/self.tlt_dollar,5) if total_trades > 0 else 0
         }
         
-        for key, value in summary.items():
-            print(f"{key}: {value}")
+        if summary:
+            for key, value in summary.items():
+                print(f"{key}: {value}")
         
         return summary
-  
+
+    def generate_trading_chart(self):
+        import plotly.graph_objects as go
+        import plotly.io as pio
+
+        df = self.trade_candles_df.copy()
+        exec_df = self.executions_df.copy()
+
+        if df.empty or exec_df.empty:
+            print("No data available to generate chart!")
+            return None
+
+        fig = go.Figure()
+
+        # Candlestick chart for price
+        fig.add_trace(go.Candlestick(x=df['date'],
+                                     open=df['open'],
+                                     high=df['high'],
+                                     low=df['low'],
+                                     close=df['close'],
+                                     name='Price'))
+
+        # Add buy and sell markers
+        buys = exec_df[exec_df['action'] == 'BUY']
+        sells = exec_df[exec_df['action'] == 'SELL']
+
+        fig.add_trace(go.Scatter(x=buys['execution_time'], y=buys['price'], mode='markers', marker=dict(symbol='triangle-up', color='black', size=20, line=dict(width=2, color='DarkSlateGrey')), name='Buy'))
+        fig.add_trace(go.Scatter(x=sells['execution_time'], y=sells['price'], mode='markers', marker=dict(symbol='triangle-down', color='black', size=20, line=dict(width=2, color='DarkSlateGrey')), name='Sell'))
+
+        fig.update_layout(title='Trading Chart', yaxis_title='Price', xaxis_title='Date', xaxis_rangeslider_visible=False)
+
+        # Save the chart as an HTML file
+        html_file = './trading_chart.html'
+        pio.write_html(fig, file=html_file, auto_open=True)
+
+        return html_file
+
+
+load_dotenv()
+api_key = os.getenv('BINANCE_API')
+api_secret = os.getenv('BINANCE_SECRET')
+avan_api_key = os.getenv('ALPHA_VANTAGE_PREM_API') 
+bn_client = Client(api_key, api_secret)
+
 class BinanceProductionStrategy(Strategy):
-    
-    def __init__(self, bn_client, trade_candles_df, indicator_candles_df, executions_df, ideal_executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df):
-        super().__init__(trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df)
+    def __init__(self, *args, ideal_executions_df, **kwargs):
+        super().__init__(*args, **kwargs)
         self.bn_client = bn_client
-        self.commission_pct=0
-        self.ideal_executions_df = ideal_executions_df # the price we wanted to buy - to cross check with actual
+        self.commission_pct = 0
+        self.ideal_executions_df = ideal_executions_df
     
     def _update_ideal_execution_logs(self, execution_time, action, symbol, tlt_dollar, price, quantity):   
         new_exec = {
@@ -377,46 +496,71 @@ class BinanceProductionStrategy(Strategy):
         logging.info(f'Sold ALL {symbol}, {balance_amt} of them.')
     
     def run_once(self): 
+        # check df frequencies
+        trade_df_timestamp = self._check_candle_frequency(self.trade_candles_df)
+        indi_df_timestamp = self._check_candle_frequency(self.indicator_candles_df)
+        extra_indi_df_timestamp = self._check_candle_frequency(self.extra_indicator_candles_df) if self.extra_indicator_candles_df is not None else indi_df_timestamp
+        
+        # get indicators
         self.indicator_candles_df = self.get_indicators(self.indicator_candles_df)
-        if self.extra_indicator_candles_df is not None:
-            self.extra_indicator_candles_df = self.get_extra_indicators(self.extra_indicator_candles_df)
+        self.extra_indicator_candles_df = self.get_extra_indicators(self.extra_indicator_candles_df) if self.extra_indicator_candles_df is not None else None
+        
+        # transform based on timeframe of the dataframes
+        if trade_df_timestamp == indi_df_timestamp == extra_indi_df_timestamp:
+            self.trade_candles_df = pd.merge(self.trade_candles_df, self.indicator_candles_df, on='date', how='left', suffixes=('', '_indi'))
+            if self.extra_indicator_candles_df is not None:
+                self.trade_candles_df = pd.merge(self.trade_candles_df, self.extra_indicator_candles_df, on='date', how='left', suffixes=('', '_exindi'))
+                
+        elif indi_df_timestamp == extra_indi_df_timestamp and trade_df_timestamp != indi_df_timestamp:
+            self.trade_candles_df['date_day'] = self.trade_candles_df['date'].dt.date
+            self.indicator_candles_df['date'] = pd.to_datetime(self.indicator_candles_df['date']).dt.date
+            self.trade_candles_df = self.trade_candles_df.merge(self.indicator_candles_df, left_on='date_day', right_on='date', suffixes=('', '_indi'), how='left')
             
-        if self._check_candle_frequency(self.trade_candles_df) == self._check_candle_frequency(self.indicator_candles_df):
-            same_tf = True
+            if self.extra_indicator_candles_df is not None:
+                self.extra_indicator_candles_df['date'] = pd.to_datetime(self.extra_indicator_candles_df['date']).dt.date
+                self.trade_candles_df = self.trade_candles_df.merge(self.extra_indicator_candles_df, left_on='date_day', right_on='date', suffixes=('', '_exindi'), how='left')
+                   
         else:
-            same_tf = False
+            logging.warning("Indicator and extra indicator dataframes have different timeframes. Will not run production.")
+            return -1
  
         candle_df_slice = self.trade_candles_df.iloc[-1]
         # opening 
-        self.stepwise_logic_open(candle_df_slice, same_tf)
+        self.stepwise_logic_open(candle_df_slice)
         # closing
         for order_index, open_order in self.open_orders_df.iterrows():
-            if open_order['status'] == 'OPEN':
-                self.stepwise_logic_close(candle_df_slice, same_tf, order_index)     
+            if open_order['status'] == 'OPEN' and open_order['symbol'] == candle_df_slice['symbol']:
+                self.stepwise_logic_close(candle_df_slice, order_index)     
         logging.info(f'Finished runinng once for latest data!')
 
 '''kids'''
-class BuyTheDipStrategy(TestStrategy):
+class StoneWellStrategy(TestStrategy):
     '''
     INDICATORS: 
-    SPY - RSI; EMA1; EMA2 
-    traded stock - RSI; EMA1; EMA2; overnight Return
-    BUY WHEN SPY RSI < spy_rsi_threshold AND stock RSI > stock_rsi_threshold AND candle returns < overnight_return_threshold
-    SELL on same day or when profit threshold is reached
+    SMA20 of stock; RSI14; SMA20 of RSI14; SMA10/20 of volume 
+    BUY -> 
+    1) close >= SMA20D 
+    2) RSI14D > SMA20D(RSI14D) 
+    3) SMA50D <= SMA200D 
+    4) SMA10D(vol) > SMA20D(vol)
+    
+    SELL/CLOSE -> 
+    when one of the 4 above stop being true
+    
+    STOP lOSS -> 10%
     ''' 
-    def __init__(self, trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df,
-                 rsi_window, ema1_span, ema2_span, spy_rsi_threshold, stock_rsi_threshold,
-                 overnight_return_threshold, profit_threshold, max_hold_hours):
-        super().__init__(trade_candles_df, indicator_candles_df, executions_df, open_orders_df, tlt_dollar, commission_pct, extra_indicator_candles_df)
+    def __init__(self, *args, rsi_window, rsi_sma_window, price_sma_window, 
+                 short_sma_window, long_sma_window, volume_short_sma_window, 
+                 volume_long_sma_window, **kwargs):
+        super().__init__(*args, **kwargs)
         self.rsi_window = rsi_window
-        self.ema1_span = ema1_span
-        self.ema2_span = ema2_span
-        self.spy_rsi_threshold = spy_rsi_threshold
-        self.stock_rsi_threshold = stock_rsi_threshold
-        self.overnight_return_threshold = overnight_return_threshold
-        self.profit_threshold = profit_threshold
-        self.max_hold_time = pd.Timedelta(hours=max_hold_hours)
-
+        self.rsi_sma_window = rsi_sma_window
+        self.price_sma_window = price_sma_window
+        self.short_sma_window = short_sma_window
+        self.long_sma_window = long_sma_window
+        self.volume_short_sma_window = volume_short_sma_window
+        self.volume_long_sma_window = volume_long_sma_window
+        
     def get_indicators(self, df):
         # Calculate RSI
         delta = df['close'].diff()
@@ -424,11 +568,94 @@ class BuyTheDipStrategy(TestStrategy):
         loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_window).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
+
+        # Calculate SMA20 of RSI14
+        df['RSI_SMA'] = df['RSI'].rolling(window=self.rsi_sma_window).mean()
         
-        # Calculate EMAs
-        df[f'EMA{self.ema1_span}'] = df['close'].ewm(span=self.ema1_span, adjust=False).mean()
-        df[f'EMA{self.ema2_span}'] = df['close'].ewm(span=self.ema2_span, adjust=False).mean()
-        df['overnight_return'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
+        # Calculate SMA20 of stock
+        df['close_SMA'] = df['close'].rolling(window=self.price_sma_window).mean()
+        df['close_short_SMA'] = df['close'].rolling(window=self.short_sma_window).mean()
+        df['close_long_SMA'] = df['close'].rolling(window=self.long_sma_window).mean()
+
+        # Calculate SMA10 and SMA20 of volume
+        df['volume_short_SMA'] = df['volume'].rolling(window=self.volume_short_sma_window).mean()
+        df['volume_long_SMA'] = df['volume'].rolling(window=self.volume_long_sma_window).mean()
+        return df
+    
+    def get_extra_indicators(self, df):
+        return df
+        
+    def stepwise_logic_open(self, trade_candle_df_slice): 
+        curr_candle = trade_candle_df_slice 
+        # LOGIC 
+        if (curr_candle['RSI'] > curr_candle['RSI_SMA'] and  # bullish rsi
+            curr_candle['close'] < curr_candle['close_SMA'] and # daily price > SMA
+            curr_candle['close_short_SMA'] < curr_candle['close_long_SMA'] and # death crossed waiting for golden cross
+            curr_candle['volume_short_SMA'] > curr_candle['volume_long_SMA']): # volume short term bullish
+
+            last_update_time = execution_time = curr_candle['date']
+            
+            # # Check if there's more than max open order
+            if (self.open_orders_df.empty or 
+                (len(self.open_orders_df[self.open_orders_df['status'] == 'OPEN']) < self.max_open_orders_total and
+                 len(self.open_orders_df[(self.open_orders_df['status'] == 'OPEN') & 
+                                         (self.open_orders_df['symbol'] == curr_candle['symbol'])]) < self.max_open_orders_per_symbol)):
+                symbol = curr_candle['symbol']  
+                price = curr_candle['close']
+                quantity = self.tlt_dollar / price   
+                 
+                self.buy(self.tlt_dollar*(1+self.commission_pct), execution_time, symbol, price, quantity)
+                self._update_open_orders_logs(last_update_time, 'OPEN', symbol, self.tlt_dollar, price, quantity)
+                logging.info(f'{last_update_time}: Opened position at {price:.2f}')
+            else:
+                logging.debug(f"{last_update_time}: Position already open, skipping new order")
+        else:
+            logging.debug(f"{curr_candle['date']}: opening stand by")
+          
+    def stepwise_logic_close(self, trade_candle_df_slice, order_index):
+        order = self.open_orders_df.iloc[order_index]
+        open_price = order['price'] 
+        curr_candle = trade_candle_df_slice
+        current_price = curr_candle['close'] 
+        profit_percentage = (current_price - open_price) / open_price  
+        
+        close_reason = ""
+        if profit_percentage <= self.stoploss_threshold:
+            close_reason = f"Stop loss triggered (Profit %: {profit_percentage:.1%}, Stop Loss Threshold: {self.stoploss_threshold:.2f}%)"
+        elif profit_percentage >= self.profit_threshold:
+            close_reason = f"Profit target reached (Profit %: {profit_percentage:.1%}, Profit Threshold: {self.profit_threshold:.2f}%)"
+        elif curr_candle['RSI'] <= curr_candle['RSI_SMA']:
+            close_reason = f"RSI dropped below RSI SMA (RSI: {curr_candle['RSI']:.2f}, RSI SMA: {curr_candle['RSI_SMA']:.2f})"
+        # elif curr_candle['close_short_SMA'] >= curr_candle['close_long_SMA']:
+        #     close_reason = f"Short SMA crossed above long SMA (Short SMA: {curr_candle['close_short_SMA']:.2f}, Long SMA: {curr_candle['close_long_SMA']:.2f})"
+        # elif curr_candle['volume_short_SMA'] <= curr_candle['volume_long_SMA']:
+        #     close_reason = f"Volume short SMA dropped below long SMA (Volume Short SMA: {curr_candle['volume_short_SMA']:.2f}, Volume Long SMA: {curr_candle['volume_long_SMA']:.2f})"
+        
+        if close_reason:
+            execution_time = curr_candle['date']
+            symbol = order['symbol']
+            price = curr_candle['close']
+            quantity = order['quantity']
+            tlt_dollar = price * quantity
+            self.sell(quantity, execution_time, symbol, tlt_dollar*(1-self.commission_pct), current_price)
+            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
+            
+            logging.info(f'{execution_time}: Closed position at {current_price:.2f} with {profit_percentage:.1%} profit. Reason: {close_reason}')
+          
+
+class StoneWellStrategy_v2(StoneWellStrategy):
+    '''
+    RSI on daily timeframe. volume, death cross on hourly timeframe
+    '''
+    def get_indicators(self, df):
+        # Calculate SMA20 of stock
+        df['close_SMA'] = df['close'].rolling(window=self.price_sma_window).mean()
+        df['close_short_SMA'] = df['close'].rolling(window=self.short_sma_window).mean()
+        df['close_long_SMA'] = df['close'].rolling(window=self.long_sma_window).mean()
+
+        # Calculate SMA10 and SMA20 of volume
+        df['volume_short_SMA'] = df['volume'].rolling(window=self.volume_short_sma_window).mean()
+        df['volume_long_SMA'] = df['volume'].rolling(window=self.volume_long_sma_window).mean()
         return df
     
     def get_extra_indicators(self, df):
@@ -438,162 +665,9 @@ class BuyTheDipStrategy(TestStrategy):
         loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_window).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
-        
-        # Calculate EMAs
-        df[f'EMA{self.ema1_span}'] = df['close'].ewm(span=self.ema1_span, adjust=False).mean()
-        df[f'EMA{self.ema2_span}'] = df['close'].ewm(span=self.ema2_span, adjust=False).mean()
-        df['overnight_return'] = (df['open'] - df['close'].shift(1)) / df['close'].shift(1)
-        return df
-        
-    def stepwise_logic_open(self, trade_candle_df_slice): 
-        curr_candle = trade_candle_df_slice 
-        # LOGIC 
-        
-        if curr_candle['RSI'] >= self.stock_rsi_threshold and curr_candle[f'EMA{self.ema1_span}']>=curr_candle[f'EMA{self.ema1_span}'] and curr_candle['overnight_return'] < self.overnight_return_threshold:
-            # curr_candle[f'RSI_exindi'] <= self.spy_rsi_threshold and 
-            last_update_time = execution_time = curr_candle['date']
-            # Check if there's no open DKS order
-            if self.open_orders_df.empty or self.open_orders_df[(self.open_orders_df['symbol'] == 'DKS') & (self.open_orders_df['status'] == 'OPEN')].empty:
-                symbol = 'DKS'   
-                price = curr_candle['close']
-                quantity = self.tlt_dollar / price   
-                 
-                self.buy(self.tlt_dollar*(1+self.commission_pct), execution_time, symbol, price, quantity)
-                self._update_open_orders_logs(last_update_time, 'OPEN', symbol, self.tlt_dollar, price, quantity)
-                logging.info(f'{last_update_time}: Opened position at {price:.2f} with RSI {curr_candle["RSI"]:.2f} and overnight return {curr_candle["overnight_return"]:.2%}')
-            else:
-                logging.debug(f"{last_update_time}: DKS position already open, skipping new order")
-        else:
-            logging.debug(f"{curr_candle['date']}: opening stand by - extra rsi:{curr_candle['RSI_exindi']:.2f} - stock rsi:{curr_candle['RSI']:.2f} - return:{curr_candle['overnight_return']:.2%}")
-          
-    def stepwise_logic_close(self, trade_candle_df_slice,order_index):
-        order = self.open_orders_df.iloc[order_index]
-        open_price = order['price']
-        open_time = pd.to_datetime(order['last_update_time'])
-        
-        last_candle = trade_candle_df_slice
-        current_price = last_candle['close']
-        current_time = pd.to_datetime(last_candle['date'])
-        
-        profit_percentage = (current_price - open_price) / open_price  
-        time_difference = current_time - open_time 
-        
-        if profit_percentage >= self.profit_threshold or time_difference >= self.max_hold_time:
-            execution_time = last_candle['date']
-            symbol = order['symbol']
-            price = last_candle['close']
-            quantity = order['quantity']
-            tlt_dollar = price * quantity
-            self.sell(quantity, execution_time, symbol, tlt_dollar*(1-self.commission_pct), current_price)
-            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
-            
-            if profit_percentage >= self.profit_threshold:
-                logging.info(f'{execution_time}: Closed position with {profit_percentage:.2f}% profit!')
-            else:
-                logging.info(f'{execution_time}: Closed position after {self.max_hold_time} with {profit_percentage:.2f}% profit/loss.')
 
-class BNDummyStrategy(BinanceProductionStrategy):
-    '''
-    INDICATORS: None
-    always buy
-    always sell
-    '''
-    def get_indicators(self, df):
+        # Calculate SMA20 of RSI14
+        df['RSI_SMA'] = df['RSI'].rolling(window=self.rsi_sma_window).mean()
         return df
-    
-    def stepwise_logic_open(self, trade_candle_df_slice, same_tf): 
-        last_candle = trade_candle_df_slice 
-        if same_tf:
-            # use indi same as trading tf
-            indicator_row = self.indicator_candles_df[self.indicator_candles_df['date'] == last_candle['date']].iloc[0] # same tf
-        else:
-            indicator_row = self.indicator_candles_df[self.indicator_candles_df['date'] == str(pd.to_datetime(last_candle['date']).date())].iloc[0]  
-
-        # LOGIC 
-        if True:
-            symbol = 'BTCUSDT'   
-            last_update_time = execution_time = last_candle['date']
-            price = last_candle['close']
-            quantity = self.tlt_dollar / price   
-             
-            executed_order = self.buy(self.tlt_dollar, execution_time, symbol, price, quantity)
-            self._update_open_orders_logs(executed_order['executed_time_str'], 'OPEN', 
-                                          symbol, 
-                                          executed_order['executed_tlt_dollar'], 
-                                          executed_order['executed_price'], 
-                                          executed_order['executed_quantity'])
-            logging.info(f'{last_update_time}: Opened position at {price:.2f}')
-        else:
-            logging.debug('not opening')
-            
-    def stepwise_logic_close(self, trade_candle_df_slice, same_tf, order_index):
-        order = self.open_orders_df.iloc[order_index]
-        open_price = order['price'] 
-        last_candle = trade_candle_df_slice
-        current_price = last_candle['close'] 
-        
-        profit_percentage = (current_price - open_price) / open_price  
-        if True:
-            execution_time = last_candle['date']
-            symbol = order['symbol']
-            price = last_candle['close']
-            quantity = order['quantity']
-            tlt_dollar = price * quantity
-            
-            executed_order = self.sell(quantity, execution_time, symbol, tlt_dollar, current_price)
-            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
-            logging.info(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
-          
-class DummyStrategy(TestStrategy):
-    '''
-    INDICATORS: None
-    always buy
-    always sell
-    '''
-    def get_indicators(self, df):
-        return df
-    
-    def stepwise_logic_open(self, trade_candle_df_slice, same_tf): 
-        last_candle = trade_candle_df_slice 
-        if same_tf:
-            # use indi same as trading tf
-            indicator_row = self.indicator_candles_df[self.indicator_candles_df['date'] == last_candle['date']].iloc[0] # same tf
-        else:
-            # manual update if timeframe different TODO
-            indicator_row = self.indicator_candles_df[self.indicator_candles_df['date'] == str(pd.to_datetime(last_candle['date']).date())].iloc[0]  
-
-        # LOGIC 
-        if True:
-            symbol = 'BTCUSDT'   
-            last_update_time = execution_time = last_candle['date']
-            price = last_candle['close']
-            quantity = self.tlt_dollar / price   
-             
-            executed_order = self.buy(self.tlt_dollar, execution_time, symbol, price, quantity)
-            self._update_open_orders_logs(executed_order['executed_time_str'], 'OPEN', 
-                                          symbol, 
-                                          executed_order['executed_tlt_dollar'], 
-                                          executed_order['executed_price'], 
-                                          executed_order['executed_quantity'])
-            logging.info(f'{last_update_time}: Opened position at {price:.2f}')
-        else:
-            logging.debug('not opening')
-            
-    def stepwise_logic_close(self, trade_candle_df_slice, same_tf, order_index):
-        order = self.open_orders_df.iloc[order_index]
-        open_price = order['price'] 
-        last_candle = trade_candle_df_slice
-        current_price = last_candle['close'] 
-        
-        profit_percentage = (current_price - open_price) / open_price  
-        if True:
-            execution_time = last_candle['date']
-            symbol = order['symbol']
-            price = last_candle['close']
-            quantity = order['quantity']
-            tlt_dollar = price * quantity
-            
-            executed_order = self.sell(quantity, execution_time, symbol, tlt_dollar, current_price)
-            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
-            logging.info(f'{execution_time}: Closed position with {profit_percentage*100:.2f}% profit!')
-   
+ 
+ 

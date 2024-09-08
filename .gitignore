@@ -12,7 +12,7 @@
 # python
 /venv
 __pycache__/
-/data
+data/
 
 # next.js
 /.next/

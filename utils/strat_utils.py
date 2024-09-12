@@ -171,6 +171,20 @@ class TestStrategy(Strategy):
                 'executed_tlt_dollar': tlt_dollar,
                 'executed_price': price}
     
+    def short_sell(self, quantity, execution_time, symbol, tlt_dollar, price):  
+        self._update_execution_logs(execution_time, 'SHORT_SELL', symbol, tlt_dollar, price, quantity)
+        return {'executed_time_str': execution_time,
+                'executed_quantity': quantity,
+                'executed_tlt_dollar': tlt_dollar,
+                'executed_price': price}
+        
+    def short_close(self, tlt_dollar, execution_time, symbol, price, quantity):  
+        self._update_execution_logs(execution_time, 'SHORT_CLOSE', symbol, tlt_dollar, price, quantity)
+        return {'executed_time_str': execution_time,
+                'executed_quantity': quantity,
+                'executed_tlt_dollar': tlt_dollar,
+                'executed_price': price}
+        
     def close_all_trades(self):
         num_open_trades = 0
         for index, order in self.open_orders_df.iterrows():
@@ -186,6 +200,7 @@ class TestStrategy(Strategy):
                 
                 self.sell(quantity, execution_time, symbol, tlt_dollar, current_price)
                 self.open_orders_df.at[index, 'status'] = 'CLOSED'
+                self.open_orders_df.at[index, 'close_reason'] = 'close all'
                 num_open_trades += 1
         logging.info(f'Closed all {num_open_trades} remaining open trades!')
     
@@ -241,17 +256,18 @@ class TestStrategy(Strategy):
             return -1
         
         logging.info('All Columns in trading df: %s', self.trade_candles_df.columns) 
-        # go through the all trade df row by row
-        # for _, candle_df_slice in tqdm(self.trade_candles_df.iterrows()): 
-        for idx in tqdm(range(len(self.trade_candles_df))): 
-            candle_df_slice = self.trade_candles_df.iloc[idx]
+        # go through the all trade df row by row 
+        offset = 4
+        for idx in tqdm(range(offset, len(self.trade_candles_df))):
+            start_idx = idx - offset
+            candle_df_slices = self.trade_candles_df.iloc[start_idx:idx+1]
             
             # opening 
-            self.stepwise_logic_open(candle_df_slice)
+            self.stepwise_logic_open(candle_df_slices)
             # closing
             for order_index, open_order in self.open_orders_df.iterrows():
-                if open_order['status'] == 'OPEN' and open_order['symbol'] == candle_df_slice['symbol']:
-                    self.stepwise_logic_close(candle_df_slice, order_index)
+                if open_order['status'] == 'OPEN' and open_order['symbol'] == candle_df_slices.iloc[-1]['symbol']:
+                    self.stepwise_logic_close(candle_df_slices, order_index)
         
         # wrap up all trades
         self.close_all_trades()        
@@ -289,14 +305,11 @@ class TestStrategy(Strategy):
 
         total_commission = total_volume * self.commission_pct
         
-        # Calculate buy and hold
-        buy_orders = df[df['action'] == 'BUY']
-        sell_orders = df[df['action'] == 'SELL']
-        buy_and_hold_profit = sum(
-            sell_orders[sell_orders['symbol'] == row['symbol']].iloc[-1]['price'] * row['quantity'] - row['tlt_dollar']
-            for _, row in buy_orders.iterrows()
-        )
-        buy_and_hold_percent = (buy_and_hold_profit / buy_orders['tlt_dollar'].sum()) * 100 if not buy_orders.empty else 0
+        # Calculate price change
+        first_price = df.iloc[0]['price']
+        last_price = df.iloc[-1]['price']
+        price_change = last_price - first_price
+        price_change_percent = ((last_price - first_price) / first_price) * 100
         
         # Calculate win rate
         profitable_trades = df[df['trade_profit'] > 0]
@@ -318,8 +331,8 @@ class TestStrategy(Strategy):
             "Profit per Trade": f"${total_profit/total_trades:.2f}" if total_trades > 0 else "$0.00",
             "% Profit per Trade": f"{(total_profit/total_trades)/self.tlt_dollar:.2%}" if total_trades > 0 else "0.00%",
             "Total Commission Cost": f"${total_commission:.2f}",
-            "Buy and Hold Profit": f"${buy_and_hold_profit:.0f}",
-            "Buy and Hold Percent": f"{buy_and_hold_percent:.2f}%",
+            "Price Change": f"${price_change:.2f}",
+            "Price Change Percent": f"{price_change_percent:.2f}%",
             "Trades Win Rate": f"{win_rate:.0f}%", 
             "Total Money Made": f"${total_money_made:.0f}",
             "Total Money Lost": f"${total_money_lost:.0f}",
@@ -335,8 +348,82 @@ class TestStrategy(Strategy):
         
         return summary
 
+    def trading_summary_short_sell(self):
+        df = self.executions_df
+        if df.empty:
+            logging.warning("No trades executed! No Summary")
+            return None
+
+        # Calculate profit for each trade
+        df['trade_profit'] = 0.0
+        df['trade_duration'] = pd.Timedelta(0)
+
+        short_sell_stack = []
+        total_profit = 0.0
+        total_trades = 0
+        total_volume = 0.0
+
+        for _, row in df.iterrows():
+            if row['action'] == 'SHORT_SELL':
+                short_sell_stack.append(row)
+                total_volume += row['tlt_dollar']
+            elif row['action'] == 'SHORT_CLOSE':
+                if short_sell_stack:
+                    short_sell_order = short_sell_stack.pop(0)
+                    profit = short_sell_order['tlt_dollar'] - row['tlt_dollar']
+                    df.loc[row.name, 'trade_profit'] = profit
+                    trade_duration = row['execution_time'] - short_sell_order['execution_time']
+                    df.loc[row.name, 'trade_duration'] = trade_duration
+                    total_profit += profit
+                    total_trades += 1
+                    total_volume += row['tlt_dollar']
+
+        total_commission = total_volume * self.commission_pct
+        
+        # Calculate price change from first to last row
+        first_price = df.iloc[0]['price']
+        last_price = df.iloc[-1]['price']
+        price_change_percent = ((last_price - first_price) / first_price) * 100
+        
+        # Calculate win rate
+        profitable_trades = df[df['trade_profit'] > 0]
+        win_rate = len(profitable_trades) / total_trades * 100 if total_trades > 0 else 0
+
+        # Calculate P&L
+        total_money_made = df[df['trade_profit'] > 0]['trade_profit'].sum()
+        total_money_lost = abs(df[df['trade_profit'] < 0]['trade_profit'].sum())
+
+        # Calculate trade duration statistics
+        trade_durations = df[df['trade_duration'] > pd.Timedelta(0)]['trade_duration']
+        avg_trade_duration = trade_durations.mean()
+        median_trade_duration = trade_durations.median()
+
+        summary = {
+            "Total Number of Trades": total_trades,
+            "Total Profit": f"${total_profit:.0f}",
+            "Total Trading Volume": f"${total_volume:.0f}",
+            "Profit per Trade": f"${total_profit/total_trades:.2f}" if total_trades > 0 else "$0.00",
+            "% Profit per Trade": f"{(total_profit/total_trades)/self.tlt_dollar:.2%}" if total_trades > 0 else "0.00%",
+            "Total Commission Cost": f"${total_commission:.2f}",
+            "Price Change Percent": f"{price_change_percent:.2f}%",
+            "Trades Win Rate": f"{win_rate:.0f}%", 
+            "Total Money Made": f"${total_money_made:.0f}",
+            "Total Money Lost": f"${total_money_lost:.0f}",
+            "Money Win/Loss Ratio": f"{total_money_made / total_money_lost:.1f}" if total_money_lost != 0 else "N/A",
+            "Average Trade Duration": str(avg_trade_duration),
+            "Median Trade Duration": str(median_trade_duration),
+            "key_metric_profit_pct": round((total_profit/total_trades)/self.tlt_dollar,5) if total_trades > 0 else 0
+        }
+        
+        if summary:
+            for key, value in summary.items():
+                print(f"{key}: {value}")
+        
+        return summary
+    
     def generate_trading_chart(self):
         import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
         import plotly.io as pio
 
         df = self.trade_candles_df.copy()
@@ -346,7 +433,10 @@ class TestStrategy(Strategy):
             print("No data available to generate chart!")
             return None
 
-        fig = go.Figure()
+        # Downsample data for faster rendering
+        df = df.iloc[::5]  # Take every 10th row
+
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.5, 0.25, 0.25])
 
         # Candlestick chart for price
         fig.add_trace(go.Candlestick(x=df['date'],
@@ -354,20 +444,121 @@ class TestStrategy(Strategy):
                                      high=df['high'],
                                      low=df['low'],
                                      close=df['close'],
-                                     name='Price'))
+                                     name='Price'),
+                      row=1, col=1)
 
         # Add buy and sell markers
         buys = exec_df[exec_df['action'] == 'BUY']
         sells = exec_df[exec_df['action'] == 'SELL']
 
-        fig.add_trace(go.Scatter(x=buys['execution_time'], y=buys['price'], mode='markers', marker=dict(symbol='triangle-up', color='black', size=20, line=dict(width=2, color='DarkSlateGrey')), name='Buy'))
-        fig.add_trace(go.Scatter(x=sells['execution_time'], y=sells['price'], mode='markers', marker=dict(symbol='triangle-down', color='black', size=20, line=dict(width=2, color='DarkSlateGrey')), name='Sell'))
+        fig.add_trace(go.Scatter(x=buys['execution_time'], y=buys['price'], mode='markers', 
+                                 marker=dict(symbol='triangle-up', color='black', size=20), 
+                                 name='Buy'),
+                      row=1, col=1)
+        fig.add_trace(go.Scatter(x=sells['execution_time'], y=sells['price'], mode='markers', 
+                                 marker=dict(symbol='triangle-down', color='black', size=20), 
+                                 name='Sell'),
+                      row=1, col=1)
 
-        fig.update_layout(title='Trading Chart', yaxis_title='Price', xaxis_title='Date', xaxis_rangeslider_visible=False)
+        # Add volume SMAs chart
+        fig.add_trace(go.Scatter(x=df['date'], y=df['volume_short_SMA'], name='Volume Short SMA', line=dict(color='blue')),
+                      row=2, col=1)
+        fig.add_trace(go.Scatter(x=df['date'], y=df['volume_long_SMA'], name='Volume Long SMA', line=dict(color='orange')),
+                      row=2, col=1)
+
+        # Add RSI and RSI SMA chart
+        fig.add_trace(go.Scatter(x=df['date'], y=df['RSI'], name='RSI', line=dict(color='purple')),
+                      row=3, col=1)
+        fig.add_trace(go.Scatter(x=df['date'], y=df['RSI_2'], name='RSI 2', line=dict(color='pink')),
+                      row=3, col=1)
+
+        # Update layout
+        fig.update_layout(
+            title='Trading Chart',
+            yaxis_title='Price',
+            xaxis_title='Date',
+            xaxis_rangeslider_visible=False,
+            showlegend=True,
+            hovermode='x unified',
+            height=900,  # Increase the height to accommodate three charts
+            margin=dict(l=50, r=50, t=50, b=50)  # Adjust margins as needed
+        )
+
+        # Update y-axis labels
+        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_yaxes(title_text="Volume SMA", row=2, col=1)
+        fig.update_yaxes(title_text="RSI", row=3, col=1)
+
+        # Add range slider and buttons for time range selection
+        fig.update_xaxes(
+            rangeslider_visible=True,
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=6, label="6m", step="month", stepmode="backward"),
+                    dict(count=1, label="YTD", step="year", stepmode="todate"),
+                    dict(count=1, label="1y", step="year", stepmode="backward"),
+                    dict(step="all")
+                ])
+            ),
+            row=3, col=1
+        )
+
+        # Function to update chart based on selected date range
+        def update_chart(start_date, end_date):
+            mask = (df['date'] >= start_date) & (df['date'] <= end_date)
+            filtered_df = df.loc[mask]
+            
+            # Update candlestick chart
+            fig.update_traces(selector=dict(type='candlestick'), x=filtered_df['date'], open=filtered_df['open'], high=filtered_df['high'], low=filtered_df['low'], close=filtered_df['close'])
+            
+            # Update volume chart
+            fig.update_traces(selector=dict(name='Volume'), x=filtered_df['date'], y=filtered_df['volume'])
+            
+            # Update other traces
+            for trace in fig.data:
+                if trace.name in ['Volume Short SMA', 'Volume Long SMA', 'RSI', 'RSI SMA']:
+                    trace.x = filtered_df['date']
+                    trace.y = filtered_df[trace.name.replace(' ', '_')]
+            
+            # Update y-axis ranges
+            fig.update_yaxes(range=[filtered_df['low'].min(), filtered_df['high'].max()], row=1, col=1)
+            fig.update_yaxes(range=[0, filtered_df['volume'].max() * 1.1], row=2, col=1)
+            fig.update_yaxes(range=[0, 100], row=3, col=1)
+
+        # Add callback for date range selection
+        fig.update_layout(
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="right",
+                    active=0,
+                    x=0.1,
+                    y=1.1,
+                    buttons=list([
+                        dict(label="1M",
+                             method="relayout",
+                             args=[{"xaxis.range": [df['date'].max() - pd.Timedelta(days=30), df['date'].max()]}]),
+                        dict(label="3M",
+                             method="relayout",
+                             args=[{"xaxis.range": [df['date'].max() - pd.Timedelta(days=90), df['date'].max()]}]),
+                        dict(label="6M",
+                             method="relayout",
+                             args=[{"xaxis.range": [df['date'].max() - pd.Timedelta(days=180), df['date'].max()]}]),
+                        dict(label="1Y",
+                             method="relayout",
+                             args=[{"xaxis.range": [df['date'].max() - pd.Timedelta(days=365), df['date'].max()]}]),
+                        dict(label="All",
+                             method="relayout",
+                             args=[{"xaxis.range": [df['date'].min(), df['date'].max()]}])
+                    ]),
+                )
+            ]
+        )
 
         # Save the chart as an HTML file
         html_file = './trading_chart.html'
-        pio.write_html(fig, file=html_file, auto_open=True)
+        pio.write_html(fig, file=html_file, auto_open=True, full_html=True, include_plotlyjs='cdn')
 
         return html_file
 
@@ -549,11 +740,12 @@ class StoneWellStrategy(TestStrategy):
     
     STOP lOSS -> 10%
     ''' 
-    def __init__(self, *args, rsi_window, rsi_sma_window, price_sma_window, 
+    def __init__(self, *args, rsi_window, rsi_window_2, rsi_sma_window, price_sma_window, 
                  short_sma_window, long_sma_window, volume_short_sma_window, 
                  volume_long_sma_window, **kwargs):
         super().__init__(*args, **kwargs)
         self.rsi_window = rsi_window
+        self.rsi_window_2 = rsi_window_2
         self.rsi_sma_window = rsi_sma_window
         self.price_sma_window = price_sma_window
         self.short_sma_window = short_sma_window
@@ -572,6 +764,12 @@ class StoneWellStrategy(TestStrategy):
         # Calculate SMA20 of RSI14
         df['RSI_SMA'] = df['RSI'].rolling(window=self.rsi_sma_window).mean()
         
+        # Calculate RSI 2 
+        gain_2 = (delta.where(delta > 0, 0)).rolling(window=self.rsi_window_2).mean()
+        loss_2 = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_window_2).mean()
+        rs_2 = gain_2 / loss_2
+        df['RSI_2'] = 100 - (100 / (1 + rs_2))
+
         # Calculate SMA20 of stock
         df['close_SMA'] = df['close'].rolling(window=self.price_sma_window).mean()
         df['close_short_SMA'] = df['close'].rolling(window=self.short_sma_window).mean()
@@ -580,18 +778,31 @@ class StoneWellStrategy(TestStrategy):
         # Calculate SMA10 and SMA20 of volume
         df['volume_short_SMA'] = df['volume'].rolling(window=self.volume_short_sma_window).mean()
         df['volume_long_SMA'] = df['volume'].rolling(window=self.volume_long_sma_window).mean()
+
+        # Calculate EMA 12 and 26
+        df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()
+        df['EMA_26'] = df['close'].ewm(span=26, adjust=False).mean()
+
         return df
     
     def get_extra_indicators(self, df):
         return df
         
-    def stepwise_logic_open(self, trade_candle_df_slice): 
-        curr_candle = trade_candle_df_slice 
+    def stepwise_logic_open(self, trade_candle_df_slices): 
+        curr_candle = trade_candle_df_slices.iloc[-1]
+        prev_candle = trade_candle_df_slices.iloc[-2]
         # LOGIC 
-        if (curr_candle['RSI'] > curr_candle['RSI_SMA'] and  # bullish rsi
-            curr_candle['close'] < curr_candle['close_SMA'] and # daily price > SMA
-            curr_candle['close_short_SMA'] < curr_candle['close_long_SMA'] and # death crossed waiting for golden cross
-            curr_candle['volume_short_SMA'] > curr_candle['volume_long_SMA']): # volume short term bullish
+        if (
+            True
+            and curr_candle['RSI'] > curr_candle['RSI_2']
+            # and (prev_candle['RSI_SMA'] ) < (curr_candle['RSI_SMA'])
+            # and curr_candle['RSI'] > curr_candle['RSI_SMA']  # bullish rsi
+            # and curr_candle['EMA_12'] >= curr_candle['EMA_26']
+            and curr_candle['open'] > curr_candle['close_SMA'] # daily price > SMA
+            # and curr_candle['close_short_SMA'] < curr_candle['close_long_SMA'] # death crossed waiting for golden cross
+            # and curr_candle['volume_short_SMA'] > curr_candle['volume_long_SMA'] # volume short term bullish
+            # and curr_candle['volume'] > curr_candle['volume_long_SMA'] 
+        ):
 
             last_update_time = execution_time = curr_candle['date']
             
@@ -601,7 +812,7 @@ class StoneWellStrategy(TestStrategy):
                  len(self.open_orders_df[(self.open_orders_df['status'] == 'OPEN') & 
                                          (self.open_orders_df['symbol'] == curr_candle['symbol'])]) < self.max_open_orders_per_symbol)):
                 symbol = curr_candle['symbol']  
-                price = curr_candle['close']
+                price = curr_candle['open']
                 quantity = self.tlt_dollar / price   
                  
                 self.buy(self.tlt_dollar*(1+self.commission_pct), execution_time, symbol, price, quantity)
@@ -612,11 +823,12 @@ class StoneWellStrategy(TestStrategy):
         else:
             logging.debug(f"{curr_candle['date']}: opening stand by")
           
-    def stepwise_logic_close(self, trade_candle_df_slice, order_index):
+    def stepwise_logic_close(self, trade_candle_df_slices, order_index):
         order = self.open_orders_df.iloc[order_index]
         open_price = order['price'] 
-        curr_candle = trade_candle_df_slice
-        current_price = curr_candle['close'] 
+        curr_candle = trade_candle_df_slices.iloc[-1]
+        prev_candle = trade_candle_df_slices.iloc[-2]
+        current_price = curr_candle['open'] 
         profit_percentage = (current_price - open_price) / open_price  
         
         close_reason = ""
@@ -624,8 +836,16 @@ class StoneWellStrategy(TestStrategy):
             close_reason = f"Stop loss triggered (Profit %: {profit_percentage:.1%}, Stop Loss Threshold: {self.stoploss_threshold:.2f}%)"
         elif profit_percentage >= self.profit_threshold:
             close_reason = f"Profit target reached (Profit %: {profit_percentage:.1%}, Profit Threshold: {self.profit_threshold:.2f}%)"
-        elif curr_candle['RSI'] <= curr_candle['RSI_SMA']:
-            close_reason = f"RSI dropped below RSI SMA (RSI: {curr_candle['RSI']:.2f}, RSI SMA: {curr_candle['RSI_SMA']:.2f})"
+        elif curr_candle['RSI'] <= curr_candle['RSI_2']:
+            close_reason = f"short RSI dropped below long RSI (Short RSI: {curr_candle['RSI']:.2f}, Long RSI: {curr_candle['RSI_2']:.2f})"
+        # elif curr_candle['volume'] < curr_candle['volume_long_SMA']:
+        #     close_reason = f"Volume below long-term SMA (Volume: {curr_candle['volume']:.2f}, Volume Long SMA: {curr_candle['volume_long_SMA']:.2f})"
+        # elif (prev_candle['RSI_SMA']) > (curr_candle['RSI_SMA']):
+        #     close_reason = f"RSI SMA decreased (Previous: {prev_candle['RSI_SMA']:.2f}, Current: {curr_candle['RSI_SMA']:.2f})"
+        # elif curr_candle['RSI'] <= curr_candle['RSI_SMA']:
+        #     close_reason = f"RSI dropped below RSI SMA (RSI: {curr_candle['RSI']:.2f}, RSI SMA: {curr_candle['RSI_SMA']:.2f})"
+        # elif curr_candle['open'] < curr_candle['close_SMA']:
+        #     close_reason = f"Short SMA crossed above long SMA (Short SMA: {curr_candle['close_short_SMA']:.2f}, Long SMA: {curr_candle['close_long_SMA']:.2f})"
         # elif curr_candle['close_short_SMA'] >= curr_candle['close_long_SMA']:
         #     close_reason = f"Short SMA crossed above long SMA (Short SMA: {curr_candle['close_short_SMA']:.2f}, Long SMA: {curr_candle['close_long_SMA']:.2f})"
         # elif curr_candle['volume_short_SMA'] <= curr_candle['volume_long_SMA']:
@@ -634,11 +854,12 @@ class StoneWellStrategy(TestStrategy):
         if close_reason:
             execution_time = curr_candle['date']
             symbol = order['symbol']
-            price = curr_candle['close']
+            price = curr_candle['open']
             quantity = order['quantity']
             tlt_dollar = price * quantity
             self.sell(quantity, execution_time, symbol, tlt_dollar*(1-self.commission_pct), current_price)
             self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
+            self.open_orders_df.at[order_index, 'close_reason'] = close_reason
             
             logging.info(f'{execution_time}: Closed position at {current_price:.2f} with {profit_percentage:.1%} profit. Reason: {close_reason}')
           
@@ -670,4 +891,67 @@ class StoneWellStrategy_v2(StoneWellStrategy):
         df['RSI_SMA'] = df['RSI'].rolling(window=self.rsi_sma_window).mean()
         return df
  
+class StoneWellStrategy_v3(StoneWellStrategy):
+    '''
+    RSI on daily timeframe. volume, death cross on hourly timeframe
+    '''
+    def stepwise_logic_open(self, trade_candle_df_slice): 
+        curr_candle = trade_candle_df_slice 
+        # LOGIC 
+        if (
+            curr_candle['RSI'] < curr_candle['RSI_SMA']  # bullish rsi
+            and curr_candle['open'] < curr_candle['close_SMA'] # daily price > SMA
+            and curr_candle['volume_short_SMA'] > curr_candle['volume_long_SMA']
+            ): # volume short term bullish
+
+            last_update_time = execution_time = curr_candle['date']
+            
+            # # Check if there's more than max open order
+            if (self.open_orders_df.empty or 
+                (len(self.open_orders_df[self.open_orders_df['status'] == 'OPEN']) < self.max_open_orders_total and
+                 len(self.open_orders_df[(self.open_orders_df['status'] == 'OPEN') & 
+                                         (self.open_orders_df['symbol'] == curr_candle['symbol'])]) < self.max_open_orders_per_symbol)):
+                symbol = curr_candle['symbol']  
+                price = curr_candle['open']
+                quantity = self.tlt_dollar / price   
+                 
+                self.short_sell(quantity, execution_time, symbol, self.tlt_dollar*(1-self.commission_pct),price)
+                self._update_open_orders_logs(last_update_time, 'OPEN', symbol, self.tlt_dollar, price, quantity)
+                logging.info(f'{last_update_time}: Opened position at {price:.2f}')
+            else:
+                logging.debug(f"{last_update_time}: Position already open, skipping new order")
+        else:
+            logging.debug(f"{curr_candle['date']}: opening stand by")
+          
+    def stepwise_logic_close(self, trade_candle_df_slice, order_index):
+        order = self.open_orders_df.iloc[order_index]
+        open_price = order['price'] 
+        curr_candle = trade_candle_df_slice
+        current_price = curr_candle['open'] 
+        profit_percentage = (open_price-current_price) / open_price  
+        
+        close_reason = ""
+        if profit_percentage <= self.stoploss_threshold:
+            close_reason = f"Stop loss triggered (Profit %: {profit_percentage:.1%}, Stop Loss Threshold: {self.stoploss_threshold:.2f}%)"
+        elif profit_percentage >= self.profit_threshold:
+            close_reason = f"Profit target reached (Profit %: {profit_percentage:.1%}, Profit Threshold: {self.profit_threshold:.2f}%)"
+        elif curr_candle['RSI'] >= curr_candle['RSI_SMA']:
+            close_reason = f"RSI crossed over RSI SMA (RSI: {curr_candle['RSI']:.2f}, RSI SMA: {curr_candle['RSI_SMA']:.2f})"
+        # elif curr_candle['close_short_SMA'] >= curr_candle['close_long_SMA']:
+        #     close_reason = f"Short SMA crossed above long SMA (Short SMA: {curr_candle['close_short_SMA']:.2f}, Long SMA: {curr_candle['close_long_SMA']:.2f})"
+        # elif curr_candle['volume_short_SMA'] <= curr_candle['volume_long_SMA']:
+        #     close_reason = f"Volume short SMA dropped below long SMA (Volume Short SMA: {curr_candle['volume_short_SMA']:.2f}, Volume Long SMA: {curr_candle['volume_long_SMA']:.2f})"
+        
+        if close_reason:
+            execution_time = curr_candle['date']
+            symbol = order['symbol']
+            price = curr_candle['open']
+            quantity = order['quantity']
+            tlt_dollar = price * quantity
+            self.short_close(tlt_dollar*(1+self.commission_pct), execution_time, symbol, current_price, quantity)
+            self.open_orders_df.at[order_index, 'status'] = 'CLOSED'
+            self.open_orders_df.at[order_index, 'close_reason'] = close_reason
+            
+            logging.info(f'{execution_time}: Closed position at {current_price:.2f} with {profit_percentage:.1%} profit. Reason: {close_reason}')
+
  

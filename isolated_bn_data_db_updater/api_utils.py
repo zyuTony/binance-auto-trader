@@ -66,7 +66,7 @@ class coin_gecko_daily_ohlc_api_getter(api_getter):
             "accept": "application/json",
             "x-cg-pro-api-key": self.api_key
         }
-        max_retries = 3
+        max_retries = 2
         retry_delay = 5  # seconds
 
         for attempt in range(max_retries):
@@ -84,9 +84,10 @@ class coin_gecko_daily_ohlc_api_getter(api_getter):
                     logging.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 else:
-                    logging.error(f"All {max_retries} attempts failed: {e}")
-                    return None
- 
+                    logging.error(f"Use past file. All {max_retries} attempts failed: {e}")
+                    with open(self.overview_save_path, 'r') as file:
+                        data = json.load(file)
+                    return data
     def _get_download_symbol_list(self):
         # get top coins
         symbols_ranking = []

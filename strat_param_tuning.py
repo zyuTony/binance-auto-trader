@@ -39,8 +39,7 @@ def parameter_tuning(trade_df, indi_df, strategy_class, param_ranges, extra_indi
             **param_dict
         )
         ts.run_test()
-        trade_summary = ts.trading_summary()
-        key_metric = trade_summary['key_metric_profit_pct']
+        trade_summary = ts.trading_summary() 
         
         result = {
             'avg_trade_duration': trade_summary['Average Trade Duration'],
@@ -92,8 +91,8 @@ conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
 min_df_chart = pd.read_sql(min_df_query, conn)
 day_df_chart = pd.read_sql(day_df_query, conn)
 
-results = parameter_tuning(min_df_chart, min_df_chart, 
-                           StoneWellStrategy_v2, param_ranges,
+results = parameter_tuning(min_df_chart, day_df_chart, 
+                           StoneWellStrategy, param_ranges,
                            day_df_chart)
 
 results.to_csv(TUNING_FOLDER+f'{symbol}_{strat_name}_tuning_results_{datetime.now().strftime("%Y%m%d_%H%M")}.csv', index=False)

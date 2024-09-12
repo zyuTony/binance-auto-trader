@@ -230,3 +230,147 @@ class binance_OHLC_db_refresher(db_refresher):
         except Exception as e:
             logging.debug(f"Data transformation failed for {symbol}: {e}")
             return None
+
+class backtest_price_db_refresher(db_refresher):
+    '''insert backtest executed trades to sql database for charting'''
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.table_creation_script = f"""
+        CREATE TABLE IF NOT EXISTS {self.table_name} (
+            symbol VARCHAR(20) NOT NULL,
+            date TIMESTAMPTZ NOT NULL,
+            open NUMERIC,
+            high NUMERIC,
+            low NUMERIC,
+            close NUMERIC,
+            volume NUMERIC,
+            RSI NUMERIC,
+            RSI_2 NUMERIC,
+            volume_short_SMA NUMERIC,
+            volume_long_SMA NUMERIC,
+            close_SMA NUMERIC,
+            PRIMARY KEY (symbol, date)
+        );
+        """
+        
+        self.data_insertion_script = f"""
+        INSERT INTO {self.table_name} (symbol, date, open, high, low, close, volume, RSI, RSI_2, volume_short_SMA, volume_long_SMA, close_SMA)
+        VALUES %s
+        ON CONFLICT (symbol, date)
+        DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume,
+            RSI = EXCLUDED.RSI,
+            RSI_2 = EXCLUDED.RSI_2,
+            volume_short_SMA = EXCLUDED.volume_short_SMA,
+            volume_long_SMA = EXCLUDED.volume_long_SMA,
+            close_SMA = EXCLUDED.close_SMA;
+        """
+        
+    def _data_transformation(self, file_path):
+        try:
+            df = pd.read_csv(file_path)
+            outputs = []
+            for _, row in df.iterrows():
+                outputs.append([
+                    row['symbol'],
+                    row['date'],
+                    row['open'],
+                    row['high'],
+                    row['low'],
+                    row['close'],
+                    row['volume'],
+                    row['RSI'],
+                    row['RSI_2'],
+                    row['volume_short_SMA'],
+                    row['volume_long_SMA'],
+                    row['close_SMA']
+                ])
+            
+            return outputs
+        except Exception as e:
+            logging.error(f"Data transformation failed for {file_path}: {e}")
+            return None
+
+    def insert_data(self, file_path): 
+        cursor = self.conn.cursor()
+        try:
+            # Delete all existing data
+            delete_query = f"DELETE FROM {self.table_name};"
+            cursor.execute(delete_query)
+            self.conn.commit()
+            logging.info(f"Deleted all existing data from {self.table_name}")
+
+            time_series_data = self._data_transformation(file_path)
+            if not time_series_data:
+                return
+
+            # Insert new data in batches
+            batch_size = 5000
+            for i in range(0, len(time_series_data), batch_size):
+                batch = time_series_data[i:i+batch_size]
+                execute_values(cursor, self.data_insertion_script, batch)
+                self.conn.commit()
+                logging.debug(f"Inserted batch {i//batch_size + 1} into {self.table_name} from {file_path}")
+            
+            logging.info(f"Successfully inserted all data into {self.table_name} from {file_path}")
+        except Exception as e:
+            logging.error(f"Failed to insert data from {file_path}: {e}")
+            self.conn.rollback()
+        finally:
+            cursor.close()
+
+class backtest_trades_db_refresher(db_refresher):
+    '''insert backtest executed trades to sql database for charting'''
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.table_creation_script = f"""
+        CREATE TABLE IF NOT EXISTS {self.table_name} (
+            symbol VARCHAR(20) NOT NULL,
+            date TIMESTAMPTZ NOT NULL,
+            action VARCHAR(4) NOT NULL,
+            price NUMERIC NOT NULL,
+            PRIMARY KEY (symbol, date)
+        );
+        """
+        
+        self.data_insertion_script = f"""
+        DELETE FROM {self.table_name};
+        INSERT INTO {self.table_name} (symbol, date, action, price)
+        VALUES %s
+        ON CONFLICT (symbol, date) DO UPDATE SET
+            action = EXCLUDED.action,
+            price = EXCLUDED.price;
+        """
+        
+    def _data_transformation(self, file_path):
+        try:
+            df = pd.read_csv(file_path)
+            outputs = []
+            for _, row in df.iterrows():
+                outputs.append([
+                    row['symbol'],
+                    row['execution_time'],
+                    row['action'],
+                    row['price']
+                ])
+            return outputs
+        except Exception as e:
+            logging.debug(f"Data transformation failed for {file_path}: {e}")
+            return None
+ 
+    def insert_data(self, file_path):
+        time_series_data = self._data_transformation(file_path)
+        cursor = self.conn.cursor()
+        try:
+            execute_values(cursor, self.data_insertion_script, time_series_data, page_size=5000)
+            self.conn.commit()
+            logging.debug(f"Inserted into {self.table_name} from {file_path}")
+        except Exception as e:
+            logging.error(f"Failed to insert data from {file_path}: {e}")
+            self.conn.rollback()
+        finally:
+            cursor.close()

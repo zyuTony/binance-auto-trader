@@ -52,20 +52,39 @@ DB_NAME = 'financial_data'
 #         db.insert_data(file_path)
 # db.close()
 
-'''4 HOURS DATA REFRESH'''
+# '''4 HOURS DATA REFRESH'''
+# bn_data = binance_ohlc_api_getter(api_key=bn_api_key,
+#                              api_secret=bn_api_secret,
+#                              data_save_path=BN_JSON_PATH,
+#                              interval=Client.KLINE_INTERVAL_4HOUR,
+#                              start_date='1 Jan, 2018',
+#                              end_date='3 Sep, 2024')
+# bn_data.download_data()
+
+# db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_4hours_historical_price")
+# db.connect()
+# db.create_table()
+# for filename in os.listdir(BN_JSON_PATH+'/4h'):
+#     if filename.endswith('.json'):
+#         file_path = os.path.join(BN_JSON_PATH+'/4h', filename)
+#         db.insert_data(file_path)
+# db.close()
+
+'''5 MINUTE DATA REFRESH'''
 bn_data = binance_ohlc_api_getter(api_key=bn_api_key,
                              api_secret=bn_api_secret,
                              data_save_path=BN_JSON_PATH,
-                             interval=Client.KLINE_INTERVAL_4HOUR,
-                             start_date='1 Jan, 2018',
-                             end_date='3 Sep, 2024')
+                             interval=Client.KLINE_INTERVAL_5MINUTE,
+                             start_date='1 Jan, 2020',
+                             end_date='8 Sep, 2024')
+bn_data.num_download_symbols = 20
 bn_data.download_data()
-
-db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_4hours_historical_price")
+ 
+db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_5mins_historical_price")
 db.connect()
 db.create_table()
-for filename in os.listdir(BN_JSON_PATH+'/4h'):
+for filename in os.listdir(BN_JSON_PATH+'/5m'):
     if filename.endswith('.json'):
-        file_path = os.path.join(BN_JSON_PATH+'/4h', filename)
+        file_path = os.path.join(BN_JSON_PATH+'/5m', filename)
         db.insert_data(file_path)
 db.close()

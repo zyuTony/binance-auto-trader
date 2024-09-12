@@ -8,6 +8,7 @@ from utils.strat_utils import *
 from utils.trading_utils import *
 from utils.avan_utils import *
 import sys
+from isolated_bn_data_db_updater.db_utils import *
 
 load_dotenv()
 api_key = os.getenv('BINANCE_API')
@@ -67,72 +68,84 @@ and b.symbol <> 'USDC';
 conn = connect_to_db(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD)
 monitored_pairs = pd.read_sql(monitored_pairs_query, conn)
 # monitored_pairs = pd.DataFrame({'symbol': ['BTC', 'ETH', 'SOL', 'AVAX', 'ADA', 'DOT', 'LINK', 'XRP', 'MATIC']})
-monitored_pairs = pd.DataFrame({'symbol': ['BTC']})
+monitored_pairs = pd.DataFrame({'symbol': ['ETH']})
 print(monitored_pairs)
 # Loop through each symbol
 
 
 all_trade_summaries = {}
 
-for symbol in monitored_pairs['symbol']:
-    min_df_query = f'''
-    select *
-    from binance_coin_hourly_historical_price 
-    where symbol = '{symbol}'
-    and date > '2024-08-01';
-    '''
-    day_df_query = f'''
-    select *
-    from binance_coin_historical_price 
-    where symbol = '{symbol}'
-    and date > '2024-08-01';
-    '''
+# for symbol in monitored_pairs['symbol']:
+#     min_df_query = f'''
+#     select *
+#     from binance_coin_hourly_historical_price 
+#     where symbol = '{symbol}'
+#     --and date > '2024-01-01'
+#     and date between '2021-11-01' and '2024-09-01';
+#     '''
+#     day_df_query = f'''
+#     select *
+#     from binance_coin_historical_price 
+#     where symbol = '{symbol}'
+#     --and date > '2024-01-01'
+#     and date between '2021-11-01' and '2024-09-01';
+#     '''
     
-    min_df_chart = pd.read_sql(min_df_query, conn)
-    day_df_chart = pd.read_sql(day_df_query, conn)
-    ts = StoneWellStrategy_v2(trade_candles_df=min_df_chart,  
-                       indicator_candles_df=min_df_chart,  
-                       executions_df=pd.DataFrame(),
-                       open_orders_df=pd.DataFrame(),
-                       tlt_dollar=1000,
-                       commission_pct=0.001,
-                       extra_indicator_candles_df=day_df_chart,
-                       profit_threshold=10,
-                       stoploss_threshold=-0.05,
-                       max_open_orders_per_symbol=1,
-                       max_open_orders_total=3,
-                       # fine tuning
-                       rsi_window=14,
-                       rsi_sma_window=30,
-                       price_sma_window=20,
-                       short_sma_window=20,
-                       long_sma_window=100,
-                       volume_short_sma_window=7,
-                       volume_long_sma_window=30
-                       )
+#     min_df_chart = pd.read_sql(min_df_query, conn)
+#     day_df_chart = pd.read_sql(day_df_query, conn)
+#     ts = StoneWellStrategy(trade_candles_df=min_df_chart,  
+#                        indicator_candles_df=day_df_chart,  
+#                        executions_df=pd.DataFrame(),
+#                        open_orders_df=pd.DataFrame(),
+#                        tlt_dollar=1000,
+#                        commission_pct=0.001,
+#                        extra_indicator_candles_df=None,
+#                        profit_threshold=1,
+#                        stoploss_threshold=-0.05,
+#                        max_open_orders_per_symbol=1,
+#                        max_open_orders_total=3,
+#                        # fine tuning
+#                        rsi_window=7,
+#                        rsi_window_2=28,
+#                        rsi_sma_window=50,
+#                        price_sma_window=50,
+#                        short_sma_window=20,
+#                        long_sma_window=100,
+#                        volume_short_sma_window=7,
+#                        volume_long_sma_window=28
+#                        )
  
     
-    # Run test for this symbol
-    ts.run_test()
-    print(ts.trade_candles_df.columns)
-    ts.trade_candles_df.to_csv('./test.csv', index=False)
-    ts.indicator_candles_df.to_csv('./test_indi.csv', index=False)
-    ts.extra_indicator_candles_df.to_csv('./test_extra_indi.csv', index=False)
-    trade_summary = ts.trading_summary()
-    all_trade_summaries[symbol] = trade_summary
+#     # Run test for this symbol
+#     ts.run_test()
+#     ts.generate_trading_chart()
+#     trade_summary = ts.trading_summary()
+#     all_trade_summaries[symbol] = trade_summary
     
-# Print all trading summaries at the end
-for symbol, summary in all_trade_summaries.items():
-    if summary:  # Only print if summary is not empty
-        print(f"\nTrading Summary for {symbol}:")
-        for key, value in summary.items():
-            print(f"{key}: {value}")
+#     ts.trade_candles_df.to_csv('./test.csv', index=False)
+#     ts.indicator_candles_df.to_csv('./test_indi.csv', index=False)
+#     ts.executions_df.to_csv('./test_exec.csv', index=False)
+#     # ts.extra_indicator_candles_df.to_csv('./test_extra_indi.csv', index=False)
+#     ts.open_orders_df.to_csv('./test_open_orders.csv', index=False)
     
-# ts.trade_candles_df.to_csv('./test.csv', index=False)
-# ts.open_orders_df.to_csv('./test_open_orders.csv', index=False)
-# ts.executions_df.to_csv('./test_exec.csv', index=False)
-# ts.indicator_candles_df.to_csv('./test_indi.csv', index=False)
-# ts.extra_indicator_candles_df.to_csv('./test_extra_indi.csv', index=False)
+    
+# # Print all trading summaries at the end
+# for symbol, summary in all_trade_summaries.items():
+#     if summary:  # Only print if summary is not empty
+#         print(f"\nTrading Summary for {symbol}:")
+#         for key, value in summary.items():
+#             print(f"{key}: {value}")
 
+
+db = backtest_price_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "backtest_price")
+db.connect()
+db.create_table()
+db.insert_data('./test.csv')
+db.close()
+
+db = backtest_trades_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "backtest_trades")
+db.connect()
+db.create_table()
+db.insert_data('./test_exec.csv')
+db.close()
 conn.close()
-

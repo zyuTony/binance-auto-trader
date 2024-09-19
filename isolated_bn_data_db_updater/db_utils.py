@@ -249,12 +249,18 @@ class backtest_price_db_refresher(db_refresher):
             volume_short_SMA NUMERIC,
             volume_long_SMA NUMERIC,
             close_SMA NUMERIC,
+            EMA_12 NUMERIC,
+            EMA_26 NUMERIC,
+            KC_upper NUMERIC,
+            KC_lower NUMERIC,
+            KC_middle NUMERIC,
+            KC_position NUMERIC,
             PRIMARY KEY (symbol, date)
         );
         """
         
         self.data_insertion_script = f"""
-        INSERT INTO {self.table_name} (symbol, date, open, high, low, close, volume, RSI, RSI_2, volume_short_SMA, volume_long_SMA, close_SMA)
+        INSERT INTO {self.table_name} (symbol, date, open, high, low, close, volume, RSI, RSI_2, volume_short_SMA, volume_long_SMA, close_SMA, EMA_12, EMA_26, KC_upper, KC_lower, KC_middle, KC_position)
         VALUES %s
         ON CONFLICT (symbol, date)
         DO UPDATE SET
@@ -267,7 +273,13 @@ class backtest_price_db_refresher(db_refresher):
             RSI_2 = EXCLUDED.RSI_2,
             volume_short_SMA = EXCLUDED.volume_short_SMA,
             volume_long_SMA = EXCLUDED.volume_long_SMA,
-            close_SMA = EXCLUDED.close_SMA;
+            close_SMA = EXCLUDED.close_SMA,
+            EMA_12 = EXCLUDED.EMA_12,
+            EMA_26 = EXCLUDED.EMA_26,
+            KC_upper = EXCLUDED.KC_upper,
+            KC_lower = EXCLUDED.KC_lower,
+            KC_middle = EXCLUDED.KC_middle,
+            KC_position = EXCLUDED.KC_position;
         """
         
     def _data_transformation(self, file_path):
@@ -287,7 +299,13 @@ class backtest_price_db_refresher(db_refresher):
                     row['RSI_2'],
                     row['volume_short_SMA'],
                     row['volume_long_SMA'],
-                    row['close_SMA']
+                    row['close_SMA'],
+                    row['EMA_12'],
+                    row['EMA_26'],
+                    row['KC_upper'],
+                    row['KC_lower'],
+                    row['KC_middle'],
+                    row['KC_position']
                 ])
             
             return outputs

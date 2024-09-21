@@ -7,6 +7,7 @@ from utils.trading_utils import *
 from utils.avan_utils import *
 import itertools
 from datetime import datetime, timedelta
+from isolated_bn_data_db_updater.db_utils import *
 
 load_dotenv()
 api_key = os.getenv('BINANCE_API')
@@ -33,7 +34,7 @@ class strat_tuner():
         self.test_data = None
         self.train_test_split_pct = 0.7  # Default value, can be adjusted
         self.rolling_window = 90  # Default 30-day rolling window
-        self.rolling_step = 1  # Default 7-day step
+        self.rolling_step = 7  # Default 7-day step
     '''
     Goal: find the best parameter for a particular symbol during particular time
         best meaning 
@@ -139,11 +140,13 @@ class strat_tuner():
             trade_summary = ts.trading_summary() 
             if trade_summary:
                 result = {
+                    'symbol': symbol,
+                    'strat_name': strat_name.__name__,  # Save the strategy name as a string
                     'start_date': self.start_date,
                     'end_date': self.end_date,
                     'trade_df_tf': trade_df_timeframe,  
                     'indi_df_tf': indi_df_timeframe, 
-                    **param_dict,
+                    'param_dict': param_dict,  # Store param_dict as a single entry
                     'avg_trade_duration': trade_summary['Average Trade Duration'],
                     'median_trade_duration': trade_summary['Median Trade Duration'],
                     'total_trades': trade_summary['Total Number of Trades'],
@@ -151,7 +154,6 @@ class strat_tuner():
                     'money_win_loss_ratio': trade_summary['Money Win/Loss Ratio'],
                     'baseline_chg_pct': trade_summary['key_metric_profit_pct'],
                     'profit_factor': trade_summary['key_metric_profit_pct'],
-                    
                 }
                 results.append(result)
             else:
@@ -161,47 +163,73 @@ class strat_tuner():
             # get rolling result
             if rolling_result:
                 exec_df = ts.executions_df.copy()
-                rolling_30d_start = []
-                rolling_30d_end = []
-                rolling_baseline_chg_pct = []
-                rolling_profit_pct = []
                 for start_date, end_date in self._get_rolling_date_list():
                     window_df = exec_df[(exec_df['execution_time'] >= start_date) & (exec_df['execution_time'] < end_date)]
-                    if window_df.empty:
-                        continue
-                    result = ts.trading_summary(window_df)
-                    rolling_30d_start.append(start_date)
-                    rolling_30d_end.append(end_date)
-                    rolling_baseline_chg_pct.append(result['Price Change Percent'])
-                    rolling_profit_pct.append(result['key_metric_profit_pct'])
-                
-                rolling_results.append({
-                    'start_date': self.start_date,
-                    'end_date': self.end_date,
-                    'trade_df_tf': trade_df_timeframe,  
-                    'indi_df_tf': indi_df_timeframe,   
-                    **param_dict,
-                    'rolling_30d_start': rolling_30d_start,
-                    'rolling_30d_end': rolling_30d_end,
-                    'rolling_baseline_chg_pct': rolling_baseline_chg_pct,
-                    'rolling_profit_pct': rolling_profit_pct
-                })
-
+                    if not window_df.empty:
+                        result = ts.trading_summary(window_df)
+                    else:
+                        # Default values for result if no data
+                        result = { 'key_metric_profit_pct': 0 }
+                    
+                    # Calculate baseline change percentage using start and end date close prices
+                    start_close = ts.trade_candles_df[ts.trade_candles_df['date'] == start_date]['close'].values[0]
+                    end_close = ts.trade_candles_df[ts.trade_candles_df['date'] == end_date]['close'].values[0]
+                    baseline_chg_pct = (end_close - start_close) / start_close  
+                    
+                    rolling_results.append({
+                        'symbol': symbol,
+                        'strat_name': strat_name.__name__,  # Save the strategy name as a string
+                        'start_date': self.start_date,
+                        'end_date': self.end_date,
+                        'trade_df_tf': trade_df_timeframe,  
+                        'indi_df_tf': indi_df_timeframe,   
+                        'param_dict': param_dict,  # Store param_dict as a single entry
+                        'rolling_30d_start': start_date,
+                        'rolling_30d_end': end_date,
+                        'rolling_baseline_chg_pct': baseline_chg_pct,
+                        'rolling_profit_pct': result['key_metric_profit_pct']
+                    })
+        
         # Save all results to a CSV file
         results_df = pd.DataFrame(results)
         if rolling_result:
             rolling_results_df = pd.DataFrame(rolling_results)
-        return results_df, rolling_results_df
+            return results_df, rolling_results_df
+        return results_df
 
+    def multi_symbols_param_tuning(self):
+        all_results = []
+        all_rolling_results = []
+        
+        for symbol in self.symbols:
+            logging.info(f"Running parameter tuning for symbol: {symbol}")
+            results_df, rolling_results_df = self.parameter_tuning(
+                symbol=symbol,
+                strat_name=self.strat_names,
+                trade_df_timeframe='1hour',
+                indi_df_timeframe='1day',
+                extra_indi_df_timeframe=None,
+                rolling_result=True
+            )
+            
+            all_results.append(results_df)
+            all_rolling_results.append(rolling_results_df)
+        
+        # Combine results for all symbols
+        combined_results = pd.concat(all_results, ignore_index=True)
+        combined_rolling_results = pd.concat(all_rolling_results, ignore_index=True)
+        
+        return combined_results, combined_rolling_results
 
+            
 param_ranges = {
     'profit_threshold': [10],
     'stoploss_threshold': [-0.05],
     'max_high_retrace': [0.05],
-    'rsi_window': [7, 14],
+    'rsi_window': [7],
     'rsi_window_2': [50],
-    'rsi_sma_window': [20, 50, 100],
-    'price_sma_window': [20, 50],
+    'rsi_sma_window': [20],
+    'price_sma_window': [20],
     'short_sma_window': [50],
     'long_sma_window': [200],
     'volume_short_sma_window': [14],
@@ -213,21 +241,30 @@ param_ranges = {
 
 bit = strat_tuner(start_date='2021-01-01', 
                   end_date='2022-01-01', 
-                  symbols=['BTC'], 
+                  symbols=['BTC', 'ETH'], 
                   strat_names=StoneWellStrategy, 
                   param_ranges=param_ranges)
 
-results_df, rolling_results_df = bit.parameter_tuning(
-    symbol='BTC', 
-    strat_name=StoneWellStrategy,
-    trade_df_timeframe='1hour',
-    indi_df_timeframe='1day',
-    extra_indi_df_timeframe=None,
-    rolling_result=True
-)
+
+results_df, rolling_results_df = bit.multi_symbols_param_tuning()
+# = bit.parameter_tuning(
+#     symbol='BTC', 
+#     strat_name=StoneWellStrategy,
+#     trade_df_timeframe='1hour',
+#     indi_df_timeframe='1day',
+#     extra_indi_df_timeframe=None,
+#     rolling_result=True
+# )
 
 results_df.to_csv('test_tuning_results.csv', index=False)
 rolling_results_df.to_csv('test_tuning_rolling_results.csv', index=False)
+
+db = backtest_tuning_rolling_results_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "backtest_tuning_rolling_results")
+db.connect()
+db.create_table()
+db.insert_data('./test_tuning_rolling_results.csv')
+db.close()
+ 
 
 # Read data from CSV files
 # def parameter_tuning(trade_df, indi_df, strategy_class, param_ranges, extra_indi_df=None):

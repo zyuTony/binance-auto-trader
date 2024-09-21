@@ -392,3 +392,59 @@ class backtest_trades_db_refresher(db_refresher):
             self.conn.rollback()
         finally:
             cursor.close()
+            
+
+class backtest_tuning_rolling_results_db_refresher(backtest_trades_db_refresher):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.table_creation_script = f"""
+        CREATE TABLE IF NOT EXISTS {self.table_name} (
+            symbol VARCHAR(20) NOT NULL,
+            strat_name VARCHAR(50) NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            trade_df_tf VARCHAR(10) NOT NULL,
+            indi_df_tf VARCHAR(10) NOT NULL,
+            param_dict JSONB NOT NULL,
+            rolling_30d_start DATE NOT NULL,
+            rolling_30d_end DATE NOT NULL,
+            rolling_baseline_chg_pct NUMERIC NOT NULL,
+            rolling_profit_pct NUMERIC NOT NULL,
+            PRIMARY KEY (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, rolling_30d_start, rolling_30d_end)
+        );
+        """
+        
+        self.data_insertion_script = f"""
+        DELETE FROM {self.table_name};
+        INSERT INTO {self.table_name} (
+            symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict,
+            rolling_30d_start, rolling_30d_end, rolling_baseline_chg_pct, rolling_profit_pct
+        )
+        VALUES %s
+        ON CONFLICT (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, rolling_30d_start, rolling_30d_end) DO UPDATE SET
+            rolling_baseline_chg_pct = EXCLUDED.rolling_baseline_chg_pct,
+            rolling_profit_pct = EXCLUDED.rolling_profit_pct;
+        """
+        
+    def _data_transformation(self, file_path):
+        try:
+            df = pd.read_csv(file_path)
+            outputs = []
+            for _, row in df.iterrows():
+                outputs.append([
+                    row['symbol'],
+                    row['strat_name'],
+                    row['start_date'],
+                    row['end_date'],
+                    row['trade_df_tf'],
+                    row['indi_df_tf'],
+                    json.dumps(eval(row['param_dict'])),
+                    row['rolling_30d_start'],
+                    row['rolling_30d_end'],
+                    float(row['rolling_baseline_chg_pct']),
+                    float(row['rolling_profit_pct'])
+                ])
+            return outputs
+        except Exception as e:
+            logging.debug(f"Data transformation failed for {file_path}: {e}")
+            return None

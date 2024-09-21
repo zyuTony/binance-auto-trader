@@ -312,11 +312,11 @@ class TestStrategy(Strategy):
         first_price = df.iloc[0]['price']
         last_price = df.iloc[-1]['price']
         price_change = last_price - first_price
-        price_change_percent = ((last_price - first_price) / first_price) * 100
+        price_change_percent = ((last_price - first_price) / first_price) 
         
         # Calculate win rate
         profitable_trades = df[df['trade_profit'] > 0]
-        win_rate = len(profitable_trades) / total_trades * 100 if total_trades > 0 else 0
+        win_rate = len(profitable_trades) / total_trades if total_trades > 0 else 0
 
         # Calculate P&L
         total_money_made = df[df['trade_profit'] > 0]['trade_profit'].sum()
@@ -335,8 +335,8 @@ class TestStrategy(Strategy):
             "% Profit per Trade": f"{(total_profit/total_trades)/self.tlt_dollar:.2%}" if total_trades > 0 else "0.00%",
             "Total Commission Cost": f"${total_commission:.2f}",
             "Price Change": f"${price_change:.2f}",
-            "Price Change Percent": f"{price_change_percent:.2f}%",
-            "Trades Win Rate": f"{win_rate:.0f}%", 
+            "Price Change Percent": f"{price_change_percent:.2f}",
+            "Trades Win Rate": f"{win_rate:.1%}", 
             "Total Money Made": f"${total_money_made:.0f}",
             "Total Money Lost": f"${total_money_lost:.0f}",
             "Money Win/Loss Ratio": f"{total_money_made / total_money_lost:.1f}" if total_money_lost != 0 else "N/A",

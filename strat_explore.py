@@ -1,13 +1,10 @@
 import os
 from dotenv import load_dotenv
 import pandas as pd
-from binance.client import Client
-from binance.helpers import round_step_size
 from binance.enums import *
 from utils.strat_utils import *
-from utils.trading_utils import *
+from utils.child_strats import *
 from utils.avan_utils import *
-import sys
 from isolated_bn_data_db_updater.db_utils import *
 
 load_dotenv()
@@ -141,14 +138,14 @@ for symbol, summary in all_trade_summaries.items():
             print(f"{key}: {value}")
 
 
-db = backtest_price_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "backtest_price")
-db.connect()
+db = backtest_charts_db_refresher("backtest_price")
+db.connect_to_db()
 db.create_table()
 db.insert_data('./test.csv')
 db.close()
 
-db = backtest_trades_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "backtest_trades")
-db.connect()
+db = backtest_trades_db_refresher("backtest_trades")
+db.connect_to_db()
 db.create_table()
 db.insert_data('./test_exec.csv')
 db.close()

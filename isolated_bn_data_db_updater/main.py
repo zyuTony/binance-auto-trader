@@ -25,8 +25,8 @@ DB_NAME = 'financial_data'
 #                              end_date='3 Sep, 2024')
 # bn_data.download_data()
 
-# db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_historical_price")
-# db.connect()
+# db = binance_OHLC_db_refresher("binance_coin_historical_price")
+# db.connect_to_db()
 # db.create_table()
 # for filename in os.listdir(BN_JSON_PATH+'/1d'):
 #     if filename.endswith('.json'):
@@ -43,8 +43,8 @@ DB_NAME = 'financial_data'
 #                              end_date='3 Sep, 2024')
 # bn_data.download_data()
 
-# db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_hourly_historical_price")
-# db.connect()
+# db = binance_OHLC_db_refresher("binance_coin_hourly_historical_price")
+# db.connect_to_db()
 # db.create_table()
 # for filename in os.listdir(BN_JSON_PATH+'/1h'):
 #     if filename.endswith('.json'):
@@ -61,8 +61,8 @@ DB_NAME = 'financial_data'
 #                              end_date='3 Sep, 2024')
 # bn_data.download_data()
 
-# db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_4hours_historical_price")
-# db.connect()
+# db = binance_OHLC_db_refresher("binance_coin_4hours_historical_price")
+# db.connect_to_db()
 # db.create_table()
 # for filename in os.listdir(BN_JSON_PATH+'/4h'):
 #     if filename.endswith('.json'):
@@ -80,8 +80,8 @@ bn_data = binance_ohlc_api_getter(api_key=bn_api_key,
 bn_data.num_download_symbols = 20
 bn_data.download_data()
  
-db = binance_OHLC_db_refresher(DB_NAME, DB_HOST, DB_USERNAME, DB_PASSWORD, "binance_coin_5mins_historical_price")
-db.connect()
+db = binance_OHLC_db_refresher("binance_coin_5mins_historical_price")
+db.connect_to_db()
 db.create_table()
 for filename in os.listdir(BN_JSON_PATH+'/5m'):
     if filename.endswith('.json'):

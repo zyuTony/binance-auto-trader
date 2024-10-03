@@ -7,12 +7,14 @@ from psycopg2 import OperationalError
 from psycopg2.extras import execute_values
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)8s | %(message)s',
     datefmt='%Y-%m-%d %H:%M' #datefmt='%Y-%m-%d %H:%M:%S'
 )
+load_dotenv()
 
 def convert_to_float(value):
     if value is None or value == "" or value == "None" or value == "-":
@@ -61,17 +63,18 @@ def truncate_string(value, length):
 class db_refresher(ABC): 
     '''object that 1) connect to db 2) transform and insert json data depends on source.
        template for coin_gecko_db and avan_stock_db'''
-    def __init__(self, db_name, db_host, db_username, db_password, table_name):
-        self.db_name = db_name
-        self.db_host = db_host
-        self.db_username = db_username
-        self.db_password = db_password
+    def __init__(self, table_name):
+        self.db_name = 'financial_data'
+        self.db_host = os.getenv('RDS_ENDPOINT')
+        self.db_username = os.getenv('RDS_USERNAME')
+        self.db_password = os.getenv('RDS_PASSWORD')
+        
         self.conn = None
         self.table_name = table_name  
         self.table_creation_script = None  # This will be set in child classes
         self.data_insertion_script = None  # This will be set in child classes
          
-    def connect(self):
+    def connect_to_db(self):
         try:
             self.conn = psycopg2.connect(
                 host=self.db_host,
@@ -100,10 +103,6 @@ class db_refresher(ABC):
         finally:
             cursor.close()
     
-    @abstractmethod
-    def _data_transformation(self, file_path):
-        pass
-    
     def insert_data(self, file_path):
         time_series_data = self._data_transformation(file_path)
         cursor = self.conn.cursor()
@@ -116,7 +115,35 @@ class db_refresher(ABC):
             self.conn.rollback()
         finally:
             cursor.close()
+    
+    def delete_table(self):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS {self.table_name};")
+            self.conn.commit()
+            logging.info(f"{self.table_name} deleted successfully.")
+        except Exception as e:
+            logging.error(f"Failed to delete table: {str(e)}")
+            self.conn.rollback()
+        finally:
+            cursor.close()
 
+    def clear_data(self):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(f"DELETE FROM {self.table_name};")
+            self.conn.commit()
+            logging.info(f"All data cleared from {self.table_name}.")
+        except Exception as e:
+            logging.error(f"Failed to clear data: {str(e)}")
+            self.conn.rollback()
+        finally:
+            cursor.close()
+                
+    @abstractmethod
+    def _data_transformation(self, file_path):
+        pass
+    
 class coin_gecko_OHLC_db_refresher(db_refresher):
     '''handle all data insertion from OHLC data via coin gecko api'''
     def __init__(self, *args):
@@ -231,13 +258,19 @@ class binance_OHLC_db_refresher(db_refresher):
             logging.debug(f"Data transformation failed for {symbol}: {e}")
             return None
 
-class backtest_price_db_refresher(db_refresher):
+class backtest_charts_db_refresher(db_refresher):
     '''insert backtest executed trades to sql database for charting'''
     def __init__(self, *args):
         super().__init__(*args)
         self.table_creation_script = f"""
         CREATE TABLE IF NOT EXISTS {self.table_name} (
             symbol VARCHAR(20) NOT NULL,
+            strat_name VARCHAR(50) NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            trade_df_tf VARCHAR(10) NOT NULL,
+            indi_df_tf VARCHAR(10) NOT NULL,
+            param_dict JSONB NOT NULL,
             date TIMESTAMPTZ NOT NULL,
             open NUMERIC,
             high NUMERIC,
@@ -255,14 +288,18 @@ class backtest_price_db_refresher(db_refresher):
             KC_lower NUMERIC,
             KC_middle NUMERIC,
             KC_position NUMERIC,
-            PRIMARY KEY (symbol, date)
+            PRIMARY KEY (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, date)
         );
         """
         
         self.data_insertion_script = f"""
-        INSERT INTO {self.table_name} (symbol, date, open, high, low, close, volume, RSI, RSI_2, volume_short_SMA, volume_long_SMA, close_SMA, EMA_12, EMA_26, KC_upper, KC_lower, KC_middle, KC_position)
+        INSERT INTO {self.table_name} (
+            symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict,
+            date, open, high, low, close, volume, RSI, RSI_2, volume_short_SMA, volume_long_SMA,
+            close_SMA, EMA_12, EMA_26, KC_upper, KC_lower, KC_middle, KC_position
+        )
         VALUES %s
-        ON CONFLICT (symbol, date)
+        ON CONFLICT (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, date)
         DO UPDATE SET
             open = EXCLUDED.open,
             high = EXCLUDED.high,
@@ -289,6 +326,12 @@ class backtest_price_db_refresher(db_refresher):
             for _, row in df.iterrows():
                 outputs.append([
                     row['symbol'],
+                    row['strat_name'],
+                    row['start_date'],
+                    row['end_date'],
+                    row['trade_df_tf'],
+                    row['indi_df_tf'],
+                    json.dumps(eval(row['param_dict'])),  # Convert string representation of dict to JSON
                     row['date'],
                     row['open'],
                     row['high'],
@@ -348,18 +391,24 @@ class backtest_trades_db_refresher(db_refresher):
         self.table_creation_script = f"""
         CREATE TABLE IF NOT EXISTS {self.table_name} (
             symbol VARCHAR(20) NOT NULL,
+            strat_name VARCHAR(50) NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL,
+            trade_df_tf VARCHAR(10) NOT NULL,
+            indi_df_tf VARCHAR(10) NOT NULL,
+            param_dict JSONB NOT NULL,
             date TIMESTAMPTZ NOT NULL,
             action VARCHAR(4) NOT NULL,
             price NUMERIC NOT NULL,
-            PRIMARY KEY (symbol, date)
+            PRIMARY KEY (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, date)
         );
         """
         
         self.data_insertion_script = f"""
         DELETE FROM {self.table_name};
-        INSERT INTO {self.table_name} (symbol, date, action, price)
+        INSERT INTO {self.table_name} (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, date, action, price)
         VALUES %s
-        ON CONFLICT (symbol, date) DO UPDATE SET
+        ON CONFLICT (symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict, date) DO UPDATE SET
             action = EXCLUDED.action,
             price = EXCLUDED.price;
         """
@@ -371,7 +420,13 @@ class backtest_trades_db_refresher(db_refresher):
             for _, row in df.iterrows():
                 outputs.append([
                     row['symbol'],
-                    row['execution_time'],
+                    row['strat_name'],
+                    row['start_date'],
+                    row['end_date'],
+                    row['trade_df_tf'],
+                    row['indi_df_tf'],
+                    json.dumps(eval(row['param_dict'])),
+                    row['date'],
                     row['action'],
                     row['price']
                 ])
@@ -391,10 +446,10 @@ class backtest_trades_db_refresher(db_refresher):
             logging.error(f"Failed to insert data from {file_path}: {e}")
             self.conn.rollback()
         finally:
+            logging.info(f"Successfully inserted all data into {self.table_name} from {file_path}")
             cursor.close()
-            
 
-class backtest_tuning_rolling_results_db_refresher(backtest_trades_db_refresher):
+class backtest_performances_db_refresher(backtest_trades_db_refresher):
     def __init__(self, *args):
         super().__init__(*args)
         self.table_creation_script = f"""
@@ -415,7 +470,6 @@ class backtest_tuning_rolling_results_db_refresher(backtest_trades_db_refresher)
         """
         
         self.data_insertion_script = f"""
-        DELETE FROM {self.table_name};
         INSERT INTO {self.table_name} (
             symbol, strat_name, start_date, end_date, trade_df_tf, indi_df_tf, param_dict,
             rolling_30d_start, rolling_30d_end, rolling_baseline_chg_pct, rolling_profit_pct

@@ -3,9 +3,7 @@ from dotenv import load_dotenv
 import pandas as pd
 from binance.client import Client
 from binance.helpers import round_step_size
-from binance.enums import *
-from utils.strat_utils import *
-from utils.trading_utils import *
+from binance.enums import * 
 import requests
 import sys
 
@@ -22,10 +20,10 @@ DB_NAME = 'financial_data'
 import pandas as pd
 import numpy as np
 
-# binance data
-client = Client(api_key, api_secret)
-min_df_chart, day_df_chart = get_bn_data(client, 'BTCUSDT')
-print(min_df_chart, day_df_chart)
+# # binance data
+# client = Client(api_key, api_secret)
+# min_df_chart, day_df_chart = get_bn_data(client, 'BTCUSDT')
+# print(min_df_chart, day_df_chart)
 
 
 

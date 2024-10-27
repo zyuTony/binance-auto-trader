@@ -1,17 +1,12 @@
 import json
 import pandas as pd
 from requests.exceptions import ConnectionError 
-from statsmodels.tsa.stattools import coint
-import statsmodels.api as sm
 import os
 import time
 from requests.exceptions import ReadTimeout, ConnectionError
 from tqdm import tqdm 
 from datetime import datetime
 from binance.client import Client
-from utils.cmc_utils import *
-from config import *
-
 
 def bn_pull_input_coins_hist_price_json(symbols, bn_api_key, bn_api_secret, start_date, end_date, interval, interval_name):
   coin_ids = [symbol+'USDT' for symbol in symbols]
@@ -36,7 +31,6 @@ def bn_pull_input_coins_hist_price_json(symbols, bn_api_key, bn_api_secret, star
           with open(CHECKPOINT_JSON_PATH+'/alt_analysis_data.json', 'w') as file:
               json.dump(checkpoint_data, file, indent=4)
   print('Download completed! :)')
-
 
 def bn_pull_top_coins_hist_price_json(cmc_api_key, bn_api_key, bn_api_secret, start_date, end_date, interval, interval_name, top_n_coins=300):
   # --- CMC
@@ -118,8 +112,6 @@ def agg_data_to_csv(output_file, coin_list=None, num_of_coins=200):
     print("Data has been written to coin_prices.csv")
     return df
  
- 
-
 # KLINE_INTERVAL_1MINUTE 
 # KLINE_INTERVAL_3MINUTE 
 # KLINE_INTERVAL_5MINUTE 

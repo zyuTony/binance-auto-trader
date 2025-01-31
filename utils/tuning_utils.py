@@ -20,7 +20,7 @@ class strat_tuner():
     def __init__(self, start_date, end_date, symbols, strat_name, param_ranges, trade_df_timeframe='1hour', indi_df_timeframe='1day', extra_indi_df_timeframe=None):
         
         self.db_host = os.getenv('RDS_ENDPOINT')
-        self.db_name = 'financial_data'
+        self. DB_NAME = os.getenv('RDS_DB_NAME')
         self.db_username = os.getenv('RDS_USERNAME')
         self.db_password = os.getenv('RDS_PASSWORD')
         

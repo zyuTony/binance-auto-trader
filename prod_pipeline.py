@@ -17,7 +17,7 @@ avan_api_key = os.getenv('ALPHA_VANTAGE_PREM_API')
 DB_USERNAME = os.getenv('RDS_USERNAME')
 DB_PASSWORD = os.getenv('RDS_PASSWORD')
 DB_HOST = os.getenv('RDS_ENDPOINT')
-DB_NAME = 'financial_data'
+ DB_NAME = os.getenv('RDS_DB_NAME')
 
 
 '''production pipeline'''

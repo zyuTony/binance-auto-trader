@@ -64,7 +64,7 @@ class db_refresher(ABC):
     '''object that 1) connect to db 2) transform and insert json data depends on source.
        template for coin_gecko_db and avan_stock_db'''
     def __init__(self, table_name):
-        self.db_name = 'financial_data'
+        self. DB_NAME = os.getenv('RDS_DB_NAME')
         self.db_host = os.getenv('RDS_ENDPOINT')
         self.db_username = os.getenv('RDS_USERNAME')
         self.db_password = os.getenv('RDS_PASSWORD')

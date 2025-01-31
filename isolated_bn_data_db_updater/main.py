@@ -14,7 +14,7 @@ gc_api_key = os.getenv('GECKO_API')
 DB_USERNAME = os.getenv('RDS_USERNAME') 
 DB_PASSWORD = os.getenv('RDS_PASSWORD') 
 DB_HOST = os.getenv('RDS_ENDPOINT') 
-DB_NAME = 'financial_data'
+ DB_NAME = os.getenv('RDS_DB_NAME')
 
 # '''DAILY DATA REFRESH'''
 # bn_data = binance_ohlc_api_getter(api_key=bn_api_key,
